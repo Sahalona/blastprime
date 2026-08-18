@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="page_title.db">BlastPrime Studio — 数据库</title>
+<link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+<script>
+  /* 主题预涂:首帧渲染前应用本地缓存的用户主题,避免系统深色与用户浅色设置不一致时闪变;
+     "system"/无缓存时不设属性,由 CSS 的 prefers-color-scheme 兜底(即为正确的系统主题)
+     Theme pre-paint: apply the locally cached user theme before the first frame renders to avoid
+     flicker when the system is dark but the user's setting is light; with "system" or no cache,
+     leave the attribute unset so CSS prefers-color-scheme supplies the correct theme. */
+  (function () {
+    try {
+      var t = localStorage.getItem("blastprime_theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <!-- 顶部导航 | Top navigation -->
+  <header class="topbar">
+    <div class="brand"><span class="logo">◈</span> <span data-i18n="app.name">BlastPrime Studio</span></div>
+    <nav class="mainnav">
+      <a href="/" data-nav="db">数据库</a>
+      <a href="/blast.html" data-nav="blast">BLAST 比对</a>
+      <a href="/design.html" data-nav="design">引物设计</a>
+    </nav>
+    <div class="topbar-right">
+      <span class="env-light" title="env"></span>
+      <span class="env-label" data-i18n="env.ok">环境就绪</span>
+      <select id="lang-switch" class="lang-select" aria-label="Language" title="临时切换语言(不保存)">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+      <button id="theme-switch" class="small" aria-label="Theme" title="临时切换主题(不保存)">◐</button>
+      <button class="small" data-action="settings" data-i18n="top.settings">设置</button>
+      <button class="small" data-action="logs" data-i18n="top.logs">日志</button>
+      <button class="small" data-action="save-project" data-i18n="top.save_project">保存项目</button>
+      <button class="small" data-action="load-project" data-i18n="top.load_project">加载项目</button>
+    </div>
+  </header>
+
+  <!-- BLAST 缺失横幅 | BLAST missing banner -->
+  <div id="env-banner">
+    <span data-i18n="banner.title">未找到 NCBI BLAST+ 工具</span>
+    <button class="small" data-action="env-guide" data-i18n="banner.guide">打开安装说明</button>
+    <button class="small" data-action="env-setdir" data-i18n="banner.set_dir">手动指定 BLAST 目录</button>
+  </div>
+
+  <main>
+    <div class="page">
+      <!-- 构建表单 | Build form -->
+      <div class="card" id="build-card">
+        <h2 data-i18n="db.build_title">构建本地 BLAST 数据库</h2>
+        <!-- 主输入:粘贴 FASTA(全宽),与 blast/design 页主输入区一致 | Main input: paste FASTA (full width), consistent with the main input areas on the blast/design pages -->
+        <textarea spellcheck="false" id="db-paste" class="code" rows="5" data-i18n-ph="db.or"></textarea>
+        <!-- 二选一补充:文件导入 | Alternative input: file import -->
+        <div class="row" style="margin:10px 0">
+          <label data-i18n="db.file_label">或从 FASTA 文件导入(可多选,自动合并)</label>
+          <input spellcheck="false" type="file" id="db-files" multiple accept=".fa,.fasta,.fna,.faa,.txt" class="small">
+        </div>
+        <!-- 参数行:配置项紧凑左排,操作按钮右置 | Parameter row: controls compactly aligned left, action buttons on the right -->
+        <div class="row">
+          <label data-i18n="db.name_label">数据库名称</label>
+          <input spellcheck="false" type="text" id="db-name" class="mono" placeholder="my_genome" data-i18n-ph="db.name_ph" style="width:220px">
+          <label style="margin-left:12px" data-i18n="db.type_label">序列类型</label>
+          <select id="db-type" style="width:140px">
+            <option value="auto" data-i18n="db.type_auto">自动检测</option>
+            <option value="nucl" data-i18n="db.type_nucl">核酸</option>
+            <option value="prot" data-i18n="db.type_prot">蛋白</option>
+          </select>
+          <span class="spacer"></span>
+          <button class="primary" id="btn-build" data-i18n="db.build_btn">开始构建</button>
+        </div>
+        <div class="hint" style="margin-top:8px" data-i18n="db.build_hint">多文件将自动合并且不修改原文件;核酸库自动添加 -parse_seqids。</div>
+      </div>
+
+      <!-- 构建日志 | Build log -->
+      <div class="card" id="build-log-card" style="display:none">
+        <h2 data-i18n="db.build_log">构建日志(实时) <span class="build-status" id="build-status"></span></h2>
+        <div class="hint" id="build-status-hint" style="margin-top:6px"></div>
+        <pre class="code" id="build-log" style="max-height:220px; min-height:60px"></pre>
+      </div>
+
+      <!-- 记录列表 | Records list -->
+      <div class="card">
+        <div class="toolbar">
+          <h2 style="margin:0" data-i18n="db.records_title">数据库记录</h2>
+          <span class="spacer"></span>
+          <button class="small" id="btn-scan-dir" data-i18n="db.scan_btn">扫描默认目录</button>
+          <button class="small" id="btn-import-db" data-i18n="db.import_btn">导入已有数据库</button>
+        </div>
+        <div id="records-wrap"><div class="empty" data-i18n="db.records_empty">暂无数据库</div></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 底部状态栏 | Bottom status bar -->
+  <footer class="statusbar" id="status-bar">
+    <span class="status-dot"></span>
+    <span class="status-text" data-i18n="status.idle">就绪</span>
+    <span class="progress-wrap" style="display:none"><span class="progress-bar"></span></span>
+    <span class="spacer"></span>
+    <button class="small danger" id="btn-cancel-task" style="display:none" data-action="cancel-task" data-i18n="status.cancel">取消</button>
+  </footer>
+
+  <!-- 日志抽屉 | Log drawer -->
+  <aside id="log-drawer">
+    <div class="log-head">
+      <h3 data-i18n="log.title">任务日志</h3>
+      <select class="log-filter" id="log-level-filter">
+        <option value="all" data-i18n="log.level_all">全部级别</option>
+        <option value="info">INFO</option>
+        <option value="warn">WARN</option>
+        <option value="error">ERROR</option>
+      </select>
+      <input spellcheck="false" type="search" class="log-filter" id="log-search" placeholder="搜索日志…" data-i18n-ph="log.search">
+      <button class="small" id="btn-log-download" data-i18n="log.download">下载</button>
+      <button class="small btn-close" data-i18n="common.close">关闭</button>
+    </div>
+    <div id="log-list"></div>
+  </aside>
+
+  <!-- 设置模态 | Settings modal -->
+  <div class="modal-mask" id="settings-modal">
+    <div class="modal">
+      <h3 data-i18n="settings.title">设置</h3>
+      <div class="form-item">
+        <label data-i18n="settings.lang">界面语言</label>
+        <select id="set-lang"><option value="zh">中文</option><option value="en">English</option></select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.theme">主题</label>
+        <select id="set-theme">
+          <option value="system" data-i18n="settings.theme_system">跟随系统</option>
+          <option value="light" data-i18n="settings.theme_light">浅色</option>
+          <option value="dark" data-i18n="settings.theme_dark">深色</option>
+        </select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.loglevel">日志级别</label>
+        <select id="set-loglevel"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.logfile">日志文件</label>
+        <input spellcheck="false" type="text" id="set-logfile" class="mono" placeholder="blastprime.log">
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.blast_dir">BLAST 可执行文件目录</label>
+        <input spellcheck="false" type="text" id="set-blastdir" class="mono" placeholder="/usr/bin">
+      </div>
+      <div class="m-actions">
+        <button class="danger btn-clear-storage" data-i18n="settings.storage_clear">清空 localStorage</button>
+        <button class="btn-cancel" data-i18n="settings.cancel">取消</button>
+        <button class="primary btn-save" data-i18n="settings.save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 浏览模态 | Browse modal -->
+  <div class="modal-mask" id="browse-modal">
+    <div class="modal">
+      <h3 data-i18n="db.browse_title">浏览数据库</h3>
+      <div id="browse-info"></div>
+      <h3 data-i18n="db.browse_entries">序列条目(前 500 条)</h3>
+      <pre class="code" id="browse-entries" style="max-height:300px"></pre>
+      <div class="m-actions">
+        <button class="btn-close" data-i18n="common.close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除选择模态 | Delete options modal -->
+  <div class="modal-mask" id="del-modal">
+    <div class="modal">
+      <h3 data-i18n="db.delete_title">删除数据库</h3>
+      <p data-i18n="db.delete_msg">请选择操作方式</p>
+      <p class="mono" id="del-prefix" style="word-break:break-all"></p>
+      <div class="m-actions">
+        <button class="btn-cancel-del" data-i18n="common.no">取消</button>
+        <button class="btn-remove-only" data-i18n="db.del_remove_only">仅移除记录</button>
+        <button class="danger btn-delete-files" data-i18n="db.del_delete_files">删除数据库文件</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 备注模态 | Note modal -->
+  <div class="modal-mask" id="note-modal">
+    <div class="modal">
+      <h3 data-i18n="db.note_title">数据库备注</h3>
+      <p id="note-prefix" style="word-break:break-all; color:var(--fg-soft)"></p>
+      <input spellcheck="false" type="text" id="note-input" class="mono" style="width:100%" placeholder="备注…" data-i18n-ph="db.note_ph">
+      <div class="m-actions">
+        <button class="btn-cancel-note" data-i18n="common.no">取消</button>
+        <button class="primary btn-save-note" data-i18n="settings.save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导入已有数据库模态 | Import existing database modal -->
+  <div class="modal-mask" id="import-modal">
+    <div class="modal">
+      <h3 data-i18n="db.import_title">导入已有数据库</h3>
+      <div class="hint" style="margin-bottom:8px" data-i18n="db.import_hint">选择已有 BLAST 数据库的索引文件(*.nin / *.pin);仅注册该库,不复制文件。</div>
+      <input spellcheck="false" type="text" id="import-path" class="mono" style="width:100%" placeholder="/data/mydb.nin" data-i18n-ph="db.import_ph">
+      <div class="m-actions">
+        <button class="btn-cancel" data-i18n="common.no">取消</button>
+        <button class="primary btn-do-import" data-i18n="db.import_btn">导入</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/pages/db.js"></script>
+</body>
+</html>

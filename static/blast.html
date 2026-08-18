@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="page_title.blast">BlastPrime Studio — BLAST 比对</title>
+<link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+<script>
+  /* 主题预涂:首帧渲染前应用本地缓存的用户主题,避免系统深色与用户浅色设置不一致时闪变;
+     "system"/无缓存时不设属性,由 CSS 的 prefers-color-scheme 兜底(即为正确的系统主题)
+     Theme pre-paint: apply the locally cached user theme before the first frame renders to avoid
+     flicker when the system is dark but the user's setting is light; with "system" or no cache,
+     leave the attribute unset so CSS prefers-color-scheme supplies the correct theme. */
+  (function () {
+    try {
+      var t = localStorage.getItem("blastprime_theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/static/css/style.css">
+<style>
+/* 图形摘要:固定头部(信息行 + 坐标轴标尺)在上,条带区独立纵向滚动 | Graphical summary: fixed header (info row + axis ruler) on top; the band area scrolls vertically independently */
+#viz-scroll { max-height: 306px; min-height: 96px; overflow: auto; scrollbar-gutter: stable; border-radius: 0 0 6px 6px; background: var(--bg-soft); }
+/* 滚动条槽位恒定:canvas 高度变化引起滚动条出现/消失时,clientWidth 不跳变,100% 参考线不会画偏 | Stable scrollbar gutter: when canvas height changes make the scrollbar appear/disappear, clientWidth does not jump, so the 100% reference line is not drawn off-position */
+#viz-canvas { display: block; cursor: crosshair; }
+#viz-head { position: relative; height: 32px; overflow: hidden; background: var(--bg-soft); border-radius: 6px 6px 0 0; }
+#viz-head-info { position: absolute; left: 4px; top: 2px; z-index: 1; font-size: 11px; color: var(--fg-soft); font-family: var(--mono); }
+#viz-ruler { position: absolute; left: 0; right: 0; bottom: 0; height: 14px; overflow: hidden; }
+#viz-ruler-canvas { position: absolute; left: 0; top: 0; }
+#viz-empty { position: absolute; inset: 32px 0 0 0; margin: 0; }
+.viz-tip {
+  position: absolute; pointer-events: none; background: var(--fg); color: var(--bg);
+  padding: 3px 7px; border-radius: 5px; font-size: 10px; z-index: 60;
+  box-shadow: var(--shadow-lg); white-space: nowrap; display: none;
+  font-family: var(--mono);
+}
+/* 结果树(序列名/查询名等宽) | Result tree (sequence names / query names in monospace) */
+.tree-node { padding: 3px 0; cursor: pointer; font-family: var(--mono); }
+.tree-node .caret { display: inline-block; width: 14px; color: var(--fg-faint); }
+.tree-node.q { font-weight: 600; }
+.tree-node.s { padding-left: 18px; }
+.tree-node.h { padding-left: 36px; font-size: 12.5px; cursor: pointer; }
+.tree-node.h:hover, .tree-node.h.sel { background: var(--accent-soft); border-radius: 4px; }
+.tree-node.q.sel, .tree-node.s.sel { background: var(--accent-soft); border-radius: 4px; }
+.tree-node .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+/* 详情对齐序列(NCBI 三行式 + 左右行号) | Detail alignment sequences (NCBI three-line format + line numbers on both sides) */
+.aln-block { margin-bottom: 12px; }
+.aln-line { display: flex; font-family: var(--mono); font-size: 12px; line-height: 1.45; white-space: pre; }
+.aln-lab { width: 52px; color: var(--fg-faint); flex-shrink: 0; }
+.aln-no { width: 9ch; min-width: 9ch; color: var(--fg-faint); flex-shrink: 0; text-align: right; padding-right: 8px; }
+.aln-seq { flex: 1; word-break: break-all; }
+.aln-mid { color: var(--fg-faint); }
+/* 高亮模式一(默认):错配/缺口黑底白字(NCBI 风格,两种主题均清晰) | Highlight mode 1 (default): mismatches/gaps in black background with white text (NCBI style, legible in both themes) */
+.hl-mm { background: #000; color: #fff; }
+/* 高亮模式二:完全一致高亮(主题变量适配) | Highlight mode 2: highlight exact matches (adapts to theme variables) */
+.hl-id { background: var(--hl-id-bg); color: var(--hl-id-fg); }
+.hl-idm { background: var(--hl-id-bg); color: var(--hl-id-fg); font-weight: 700; }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; font-size: 13px; margin-bottom: 8px; }
+.kv dt { color: var(--fg-soft); }
+.kv dd { margin: 0; }
+.raw-wrap { max-height: 380px; overflow-y: auto; }
+/* 结果区标签页(比对结果 / 引物分析) | Result area tabs (BLAST results / primer analysis) */
+.tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.tab {
+  padding: 6px 16px; border-radius: 999px; font-size: 13px; cursor: pointer;
+  background: var(--card); color: var(--fg-soft); border: 1px solid var(--border-strong);
+}
+.tab:hover { color: var(--fg); background: var(--bg-soft); }
+.tab.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+/* 引物分析(模块三):指标卡片 + 判定大字 + 命中列表 | Primer analysis (Module 3): metric cards + verdict text + hit list */
+.ana-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.ana-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg-soft); }
+.ana-card .name { font-size: 12px; color: var(--fg-soft); margin-bottom: 4px; }
+.ana-card .val { font-size: 17px; font-weight: 700; }
+.ana-card .unit { font-size: 12px; color: var(--fg-soft); font-weight: 400; }
+.ana-card .detail { font-size: 11.5px; color: var(--fg-faint); margin-top: 2px; }
+.ana-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.ana-dot.green { background: var(--ok); }
+.ana-dot.yellow { background: var(--warn); }
+.ana-dot.red { background: var(--err); }
+.ana-verdict { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; }
+.ana-verdict .sub { font-size: 12.5px; color: var(--fg-soft); font-weight: 400; }
+.ana-hit { border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; margin-bottom: 6px; cursor: pointer; }
+.ana-hit:hover { background: var(--bg-soft); }
+.ana-hit.open { background: var(--bg-soft); }
+.ana-hit-body { display: none; margin-top: 6px; font-size: 12.5px; color: var(--fg-soft); border-top: 1px dashed var(--border); padding-top: 6px; }
+.ana-hit.open .ana-hit-body { display: block; }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">◈</span> <span data-i18n="app.name">BlastPrime Studio</span></div>
+    <nav class="mainnav">
+      <a href="/" data-nav="db">数据库</a>
+      <a href="/blast.html" data-nav="blast">BLAST 比对</a>
+      <a href="/design.html" data-nav="design">引物设计</a>
+    </nav>
+    <div class="topbar-right">
+      <span class="env-light"></span>
+      <span class="env-label" data-i18n="env.ok">环境就绪</span>
+      <select id="lang-switch" class="lang-select" aria-label="Language" title="临时切换语言(不保存)">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+      <button id="theme-switch" class="small" aria-label="Theme" title="临时切换主题(不保存)">◐</button>
+      <button class="small" data-action="settings" data-i18n="top.settings">设置</button>
+      <button class="small" data-action="logs" data-i18n="top.logs">日志</button>
+      <button class="small" data-action="save-project" data-i18n="top.save_project">保存项目</button>
+      <button class="small" data-action="load-project" data-i18n="top.load_project">加载项目</button>
+    </div>
+  </header>
+
+  <div id="env-banner">
+    <span data-i18n="banner.title">未找到 NCBI BLAST+ 工具</span>
+    <button class="small" data-action="env-guide" data-i18n="banner.guide">打开安装说明</button>
+    <button class="small" data-action="env-setdir" data-i18n="banner.set_dir">手动指定 BLAST 目录</button>
+  </div>
+
+  <main>
+    <div class="page">
+      <!-- 查询输入 | Query input -->
+      <div class="card">
+        <h2 data-i18n="blast.query_title">查询序列</h2>
+        <textarea spellcheck="false" id="q-seq" class="code" rows="5" data-i18n-ph="blast.query_ph"></textarea>
+        <div class="row" style="margin:10px 0">
+          <label data-i18n="blast.file_label">或从 FASTA 文件导入</label>
+          <input spellcheck="false" type="file" id="q-file" multiple accept=".fa,.fasta,.fna,.txt" class="small">
+        </div>
+        <!-- 序列工具:反向互补 / 序列清洗 / 6 框翻译(guide.md 5.3) | Sequence tools: reverse complement / sequence cleanup / 6-frame translation (guide.md 5.3) -->
+        <div class="row" style="margin-bottom:10px">
+          <button class="small tool-btn" id="btn-revcomp" data-i18n="blast.tool_revcomp">反向互补</button>
+          <button class="small tool-btn" id="btn-clean" data-i18n="blast.tool_clean">序列清洗</button>
+          <button class="small tool-btn" id="btn-translate6" data-i18n="blast.tool_translate6">6 框翻译</button>
+        </div>
+        <div class="row">
+          <label data-i18n="blast.db_label">目标数据库</label>
+          <!-- R12:不再有"选择本地数据库…"占位项(占位仅存在于空库提示,见 loadDbs) -->
+          <!-- R12: no "select a local database..." placeholder option (the
+               empty-state hint lives in loadDbs) -->
+          <select id="q-db" class="mono" style="min-width:200px"></select>
+          <label style="margin-left:12px"><input spellcheck="false" type="checkbox" id="q-remote"> <span data-i18n="blast.remote_label">远程比对</span></label>
+          <input spellcheck="false" type="text" id="q-remote-db" class="mono" style="width:220px; display:none" placeholder="nr / nt" data-i18n-ph="blast.remote_db_label">
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label data-i18n="blast.program_label">比对程序</label>
+          <select id="q-program" style="width:110px">
+            <option value="auto" data-i18n="blast.program_auto">自动选择</option>
+            <option value="blastn">blastn</option>
+            <option value="blastp">blastp</option>
+            <option value="blastx">blastx</option>
+            <option value="tblastn">tblastn</option>
+          </select>
+          <label>E-value</label>
+          <input spellcheck="false" type="text" id="q-evalue" class="mono" style="width:70px" value="10">
+          <label data-i18n="blast.max_targets">最多命中数</label>
+          <input spellcheck="false" type="number" id="q-maxtargets" style="width:90px" value="500" min="1">
+          <label style="margin-left:12px"><input spellcheck="false" type="checkbox" id="q-short"> <span data-i18n="blast.short_mode">短序列模式</span></label>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="btn-run" data-i18n="blast.start">开始比对</button>
+          <button id="btn-import" data-i18n="blast.import_btn">导入成对格式文本</button>
+          <!-- R12 恢复默认:仅参数(程序/e-value/最大命中/短序列/远程),保留序列与库 -->
+          <!-- R12 restore defaults: parameters only (program/e-value/max targets/short/remote); sequence and database are kept -->
+          <button id="btn-restore-defaults" data-i18n="blast.params_restore">恢复默认参数</button>
+          <span class="spacer"></span>
+          <!-- 比对运行状态行(spinner/秒表/结果),样式复用建库页 build-status 组件 -->
+          <!-- Alignment run status line (spinner / elapsed timer / result); reuses the build-status component style from the database page -->
+          <span class="build-status" id="run-status"></span>
+          <span class="muted" id="run-hint"></span>
+        </div>
+        <!-- 比对运行提示:大库/远程比对耗时较长时告知可继续其他页面操作 -->
+        <!-- Run hint: for long alignments (large DBs / remote), tell the user they may continue elsewhere -->
+        <div class="hint" id="run-hint-extra" style="margin-top:6px"></div>
+      </div>
+
+      <!-- 结果区 | Result area -->
+      <div id="result-area" style="display:none">
+        <!-- 标签页:短序列模式 + 全部查询 ≤100 bp 时出现"引物分析"(guide 5.2/6.1) | Tabs: "Primer Analysis" appears in short-sequence mode when all queries are ≤100 bp (guide 5.2/6.1) -->
+        <div class="tabs" id="result-tabs" style="display:none">
+          <button class="tab active" data-tab="results" data-i18n="blast.tab_results">比对结果</button>
+          <button class="tab" data-tab="analysis" data-i18n="blast.tab_analysis">引物分析</button>
+        </div>
+
+        <div id="tab-results">
+          <div class="card">
+            <div class="toolbar">
+              <h2 style="margin:0" data-i18n="blast.result_title">命中结果</h2>
+              <label for="viz-query" class="muted" style="margin-left:14px" data-i18n="blast.viz_query">显示查询</label>
+              <select id="viz-query" class="mono" style="max-width:240px; margin-left:6px"></select>
+              <button class="small" id="btn-viz-prev" data-i18n="blast.viz_prev">上一个</button>
+              <button class="small" id="btn-viz-next" data-i18n="blast.viz_next">下一个</button>
+              <!-- R12 分级切换:identity|score 双态按钮组,选中项 .active 高亮 -->
+              <!-- R12 grade toggle: identity|score two-state group, active item highlighted -->
+              <span id="viz-grade-group" style="margin-left:10px; display:inline-flex">
+                <button class="small grade-btn" id="btn-viz-grade-identity" data-i18n="blast.viz_toggle_identity">identity 分级</button>
+                <button class="small grade-btn" id="btn-viz-grade-score" data-i18n="blast.viz_toggle_score">score 分级</button>
+              </span>
+              <span class="spacer"></span>
+              <button class="small" id="btn-export-raw" data-i18n="blast.export_raw">原始输出(.txt)</button>
+              <button class="small" id="btn-export-aln" data-i18n="blast.export_aln">比对结果(.txt)</button>
+              <button class="small" id="btn-export-csv" data-i18n="blast.export_csv">统计(.csv)</button>
+              <button class="small" id="btn-export-fasta" data-i18n="blast.export_fasta">命中序列(.fasta)</button>
+              <!-- R12 清空结果:清掉当前结果区与持久化结果,参数与序列不动 -->
+              <!-- R12 clear result: clears the result area and the persisted result; parameters and sequence are untouched -->
+              <button class="small danger" id="btn-clear-result" data-i18n="blast.clear_result">清空结果</button>
+            </div>
+            <div class="grid2">
+              <div style="min-width:0">
+                <h3 data-i18n="blast.viz_title">图形摘要</h3>
+                <!-- 提示行由 updateGradeButtons 动态写入(identity/score 两文案随语言切换) -->
+                <!-- The hint line is written dynamically by updateGradeButtons (identity/score texts follow the language) -->
+                <div class="hint" style="margin-bottom:8px" id="viz-hint"></div>
+                <div style="position:relative" id="viz-wrap">
+                  <!-- 固定头部(不随纵向滚动):查询信息 + 坐标轴标尺,横向缩放/平移时标尺同步 | Fixed header (does not scroll vertically): query info + axis ruler; the ruler stays in sync during horizontal zoom/pan -->
+                  <div id="viz-head">
+                    <div id="viz-head-info"></div>
+                    <div id="viz-ruler"><canvas id="viz-ruler-canvas"></canvas></div>
+                  </div>
+                  <div class="viz-scroll" id="viz-scroll">
+                    <canvas id="viz-canvas"></canvas>
+                  </div>
+                  <div id="viz-empty" class="empty" style="display:none" data-i18n="blast.viz_empty">无命中</div>
+                  <div class="viz-tip" id="viz-tip"></div>
+                </div>
+              </div>
+              <div>
+                <h3 data-i18n="blast.result_title">命中列表</h3>
+                <div id="result-tree" style="max-height:340px; overflow-y:auto; font-size:13px"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid2">
+            <div class="card">
+              <h2 data-i18n="blast.detail_title">比对详情</h2>
+              <div class="row" style="margin-bottom:8px">
+                <label data-i18n="blast.hl_mode">高亮</label>
+                <select id="hl-mode" class="mono" style="width:150px">
+                  <option value="mismatch" data-i18n="blast.hl_mismatch">错配/缺口</option>
+                  <option value="match" data-i18n="blast.hl_match">完全一致</option>
+                </select>
+                <span class="spacer"></span>
+                <button class="small" id="btn-copy-sbjct" data-i18n="blast.copy_sbjct">复制 Sbjct 序列</button>
+                <button class="small" id="btn-copy-name" data-i18n="blast.copy_name" title="按 >[gene],range=,database= 格式复制,可在引物设计页作为名称型模板使用">复制名称型查询</button>
+              </div>
+              <div id="detail-view"><div class="empty" data-i18n="blast.detail_empty">在结果树中点击命中查看详情。</div></div>
+            </div>
+            <div class="card">
+              <h2 data-i18n="blast.raw_title">原始输出</h2>
+              <div class="hint" style="margin-bottom:6px" data-i18n="blast.raw_lazy">原始输出较大,按需分批加载</div>
+              <div class="raw-wrap" id="raw-view"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 模块三:引物分析(复用当前比对结果,不重新跑 BLAST) | Module 3: primer analysis (reuses the current BLAST results, no BLAST rerun) -->
+        <div id="tab-analysis" style="display:none">
+          <div class="card">
+            <div class="row" style="margin-bottom:12px">
+              <label data-i18n="blast.analysis_sel_query">分析序列</label>
+              <select id="ana-query" class="mono" style="min-width:220px"></select>
+              <span class="spacer"></span>
+              <button class="small" id="btn-copy-report" data-i18n="blast.copy_report">复制报告</button>
+            </div>
+            <div class="ana-cards" id="ana-cards"></div>
+            <div id="ana-verdict" style="margin:16px 0 12px"></div>
+            <h3 data-i18n="blast.ana_hits">特异性命中列表</h3>
+            <div id="ana-hits"></div>
+            <div class="hint" id="ana-notes" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="statusbar" id="status-bar">
+    <span class="status-dot"></span>
+    <span class="status-text" data-i18n="status.idle">就绪</span>
+    <span class="progress-wrap" style="display:none"><span class="progress-bar"></span></span>
+    <span class="spacer"></span>
+    <button class="small danger" id="btn-cancel-task" style="display:none" data-action="cancel-task" data-i18n="status.cancel">取消</button>
+  </footer>
+
+  <aside id="log-drawer">
+    <div class="log-head">
+      <h3 data-i18n="log.title">任务日志</h3>
+      <select class="log-filter" id="log-level-filter">
+        <option value="all" data-i18n="log.level_all">全部级别</option>
+        <option value="info">INFO</option>
+        <option value="warn">WARN</option>
+        <option value="error">ERROR</option>
+      </select>
+      <input spellcheck="false" type="search" class="log-filter" id="log-search" placeholder="搜索日志…" data-i18n-ph="log.search">
+      <button class="small" id="btn-log-download" data-i18n="log.download">下载</button>
+      <button class="small btn-close" data-i18n="common.close">关闭</button>
+    </div>
+    <div id="log-list"></div>
+  </aside>
+
+  <div class="modal-mask" id="settings-modal">
+    <div class="modal">
+      <h3 data-i18n="settings.title">设置</h3>
+      <div class="form-item">
+        <label data-i18n="settings.lang">界面语言</label>
+        <select id="set-lang"><option value="zh">中文</option><option value="en">English</option></select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.theme">主题</label>
+        <select id="set-theme">
+          <option value="system" data-i18n="settings.theme_system">跟随系统</option>
+          <option value="light" data-i18n="settings.theme_light">浅色</option>
+          <option value="dark" data-i18n="settings.theme_dark">深色</option>
+        </select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.loglevel">日志级别</label>
+        <select id="set-loglevel"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.logfile">日志文件</label>
+        <input spellcheck="false" type="text" id="set-logfile" class="mono" placeholder="blastprime.log">
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.blast_dir">BLAST 可执行文件目录</label>
+        <input spellcheck="false" type="text" id="set-blastdir" class="mono" placeholder="/usr/bin">
+      </div>
+      <div class="m-actions">
+        <button class="danger btn-clear-storage" data-i18n="settings.storage_clear">清空 localStorage</button>
+        <button class="btn-cancel" data-i18n="settings.cancel">取消</button>
+        <button class="primary btn-save" data-i18n="settings.save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导入模态 | Import modal -->
+  <div class="modal-mask" id="import-modal">
+    <div class="modal">
+      <h3 data-i18n="blast.import_title">导入 BLAST 成对文本(-outfmt 0)</h3>
+      <div class="row" style="margin-bottom:8px">
+        <label data-i18n="blast.import_file">导入文件</label>
+        <input spellcheck="false" type="file" id="import-file" accept=".txt,.out,.blast,.aln,text/plain" multiple>
+      </div>
+      <textarea spellcheck="false" id="import-text" class="code" rows="10" data-i18n-ph="blast.import_ph"></textarea>
+      <div class="m-actions">
+        <button class="btn-cancel" data-i18n="common.no">取消</button>
+        <button class="primary btn-do-import" data-i18n="blast.import_btn">导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6 框翻译模态 | 6-frame translation modal -->
+  <div class="modal-mask" id="translate-modal">
+    <div class="modal" style="max-width:760px">
+      <h3 data-i18n="blast.translate_title">6 框翻译</h3>
+      <div class="row" style="margin-bottom:10px">
+        <label data-i18n="blast.translate_seq">序列</label>
+        <select id="tr-seq" style="min-width:180px"></select>
+        <label style="margin-left:12px" data-i18n="blast.translate_table">遗传密码表</label>
+        <select id="tr-table" style="min-width:220px"></select>
+        <span class="spacer"></span>
+        <button class="small" id="btn-tr-copy" data-i18n="blast.translate_copy">复制全部</button>
+      </div>
+      <div id="tr-out" style="max-height:56vh; overflow-y:auto"></div>
+      <div class="m-actions">
+        <button class="btn-cancel btn-tr-close" data-i18n="common.close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/pages/blast.js"></script>
+</body>
+</html>

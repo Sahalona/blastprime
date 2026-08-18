@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn>=0.29
+biopython>=1.81
+primer3-py>=2.0.0
+python-multipart>=0.0.9
+pillow>=12.3.0

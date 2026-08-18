@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="page_title.design">BlastPrime Studio — 引物设计</title>
+<link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+<script>
+  /* 主题预涂:首帧渲染前应用本地缓存的用户主题,避免系统深色与用户浅色设置不一致时闪变;
+     "system"/无缓存时不设属性,由 CSS 的 prefers-color-scheme 兜底(即为正确的系统主题)
+     Theme pre-paint: apply the locally cached user theme before the first frame renders to avoid
+     flicker when the system is dark but the user's setting is light; with "system" or no cache,
+     leave the attribute unset so CSS prefers-color-scheme supplies the correct theme. */
+  (function () {
+    try {
+      var t = localStorage.getItem("blastprime_theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/static/css/style.css">
+<style>
+#depth-canvas { width: 100%; display: block; border-radius: 6px; background: var(--bg-soft); }
+.dz-legend { display: flex; gap: 16px; font-size: 12px; color: var(--fg-soft); margin: 6px 0 8px; flex-wrap: wrap; }
+.dz-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; vertical-align: -2px; }
+/* 引物标记图例:与 canvas 中的倒三角(尖端朝下)一致 */
+/* Primer-marker legend entries: inverted triangles matching the canvas markers */
+.dz-legend i.tri { width: 11px; height: 10px; border-radius: 0; clip-path: polygon(50% 100%, 100% 0, 0 0); }
+.param-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.param-grid label { display: block; font-size: 12px; color: var(--fg-soft); margin-bottom: 3px; }
+.param-grid input, .param-grid select { width: 100%; }
+/* 多输入单元格(如 Tm min/opt/max、Primer len min/max):占两列,行内不换行 | Multi-input cells (e.g. Tm min/opt/max, Primer len min/max): span two columns, no line wrap within the row */
+.param-grid > div { min-width: 0; }
+.param-grid > div.w2 { grid-column: span 2; }
+.param-grid .row { flex-wrap: nowrap; gap: 4px; }
+.param-grid input[type=number] { min-width: 0; }
+.pr-row { cursor: pointer; }
+.pr-row:hover td { background: var(--bg-soft); }
+/* 引物/产物序列等宽 | Primer/product sequences in monospace */
+#pr-table-wrap table.data td { font-family: var(--mono); }
+.pr-row.sel td { background: var(--accent-soft); }
+#pr-detail .kv { margin-top: 6px; }
+.spec-hit { font-size: 12px; padding: 2px 0; color: var(--fg-soft); font-family: var(--mono); }
+.slider-lbl { font-size: 11px; color: var(--fg-soft); text-anchor: middle; }
+input.invalid { border-color: var(--err) !important; }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">◈</span> <span data-i18n="app.name">BlastPrime Studio</span></div>
+    <nav class="mainnav">
+      <a href="/" data-nav="db">数据库</a>
+      <a href="/blast.html" data-nav="blast">BLAST 比对</a>
+      <a href="/design.html" data-nav="design">引物设计</a>
+    </nav>
+    <div class="topbar-right">
+      <span class="env-light"></span>
+      <span class="env-label" data-i18n="env.ok">环境就绪</span>
+      <select id="lang-switch" class="lang-select" aria-label="Language" title="临时切换语言(不保存)">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+      <button id="theme-switch" class="small" aria-label="Theme" title="临时切换主题(不保存)">◐</button>
+      <button class="small" data-action="settings" data-i18n="top.settings">设置</button>
+      <button class="small" data-action="logs" data-i18n="top.logs">日志</button>
+      <button class="small" data-action="save-project" data-i18n="top.save_project">保存项目</button>
+      <button class="small" data-action="load-project" data-i18n="top.load_project">加载项目</button>
+    </div>
+  </header>
+
+  <div id="env-banner">
+    <span data-i18n="banner.title">未找到 NCBI BLAST+ 工具</span>
+    <button class="small" data-action="env-guide" data-i18n="banner.guide">打开安装说明</button>
+    <button class="small" data-action="env-setdir" data-i18n="banner.set_dir">手动指定 BLAST 目录</button>
+  </div>
+
+  <main>
+    <div class="page">
+      <!-- 输入 | Input -->
+      <div class="card">
+        <h2 data-i18n="design.title">引物设计</h2>
+        <label data-i18n="design.template_title">模板序列</label>
+        <textarea spellcheck="false" id="dp-template" class="code" rows="4" data-i18n-ph="design.template_ph"></textarea>
+        <div class="row" style="margin-top:8px">
+          <label data-i18n="design.file_label">或从 FASTA 文件导入</label>
+          <input spellcheck="false" type="file" id="dp-file" multiple accept=".fa,.fasta,.fna,.faa,.txt" class="small">
+        </div>
+        <!-- 名称型模板解析状态(spinner + 文案,解析期间显示) -->
+        <!-- Named-template parse status (spinner + text, shown while parsing) -->
+        <div class="hint" id="named-status" style="display:none; margin-top:6px"></div>
+        <div class="row" style="margin-top:10px">
+          <label data-i18n="design.db_label">特异性比对核酸基因组库</label>
+          <select id="dp-db" class="mono" style="min-width:180px"></select>
+          <label style="margin-left:12px; display:inline-flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="checkbox" id="dp-skip-spec">
+            <span data-i18n="design.skip_spec_label">跳过特异性查询</span>
+          </label>
+          <label style="margin-left:12px; display:inline-flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="checkbox" id="dp-skip-kmer">
+            <span data-i18n="design.skip_kmer_label">跳过 k-mer 评分过程</span>
+          </label>
+          <label style="margin-left:10px" data-i18n="design.mode_label">设计模式</label>
+          <select id="dp-mode" style="width:220px">
+            <option value="standard" data-i18n="design.mode_standard">标准引物对</option>
+            <option value="sgrna" data-i18n="design.mode_sgrna">sgRNA (20 bp + NGG PAM)</option>
+            <option value="single" data-i18n="design.mode_single">单引物</option>
+          </select>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="btn-design" data-i18n="design.start">开始设计</button>
+          <button id="btn-restore" data-i18n="design.params_restore">恢复默认</button>
+        </div>
+        <!-- 设计运行状态行(spinner/秒表/结果),样式复用比对页 build-status 组件 -->
+        <!-- Design run status line (spinner / elapsed timer / result); reuses the build-status component style from the alignment page -->
+        <div class="row" style="margin-top:10px; align-items:center">
+          <span class="build-status" id="run-status"></span>
+          <span class="muted" id="run-hint"></span>
+        </div>
+        <!-- 设计运行提示:大库设计耗时较长时告知可继续其他页面操作 -->
+        <!-- Run hint: for long designs, tell the user they may continue elsewhere -->
+        <div class="hint" id="run-hint-extra" style="margin-top:6px"></div>
+        <!-- 设计管线步骤条(运行中随日志推进,无需打开日志抽屉即可看到当前在哪一步) -->
+        <!-- Design pipeline step bar (advances with task logs during the run, so the current step is visible without opening the log drawer) -->
+        <div id="run-steps" class="run-steps" style="display:none"></div>
+      </div>
+
+      <!-- 侧翼模板(名称型模板解析成功后显示) | Flanking template (shown after a named template is resolved successfully) -->
+      <div id="flank-view" style="display:none">
+        <div class="card">
+          <h2 data-i18n="loc.template_title">侧翼模板</h2>
+          <div id="loc-tmpl-info" class="hint" style="line-height:1.8"></div>
+          <div class="row" style="margin-top:10px; align-items:center">
+            <label data-i18n="design.flank_label">侧翼长度(bp)</label>
+            <input spellcheck="false" type="number" id="dp-flank" value="150" min="0" style="width:90px">
+            <span class="hint" data-i18n="design.flank_named_hint">修改后自动重新解析</span>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label data-i18n="loc.f_range">正向设计范围 F</label>
+            <span class="muted" id="loc-f-min" style="width:38px; text-align:center"></span>
+            <canvas id="loc-f-slider" width="300" height="26" style="cursor:pointer; background:var(--bg-soft); border-radius:5px; flex:1; min-width:160px"></canvas>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label data-i18n="loc.r_range">反向设计范围 R</label>
+            <span class="muted" id="loc-r-min" style="width:38px; text-align:center"></span>
+            <canvas id="loc-r-slider" width="300" height="26" style="cursor:pointer; background:var(--bg-soft); border-radius:5px; flex:1; min-width:160px"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- 参数 | Parameters -->
+      <div class="card">
+        <h2 style="cursor:pointer; user-select:none" id="params-toggle"
+            title="点击收起/展开设计参数"><span data-i18n="design.params_title">设计参数</span><span id="params-caret"> ▾</span></h2>
+        <div id="params-body">
+          <div id="primer-range-group" style="margin-bottom:12px">
+            <div class="hint" style="margin-bottom:6px" data-i18n="design.range_hint">仅名称型模板可用;*N 记法表示距目标区间端点 N bp(如 *150 表示端点外 150 bp)</div>
+            <div class="row" style="align-items:baseline">
+              <span class="row" style="gap:4px; flex-wrap:nowrap">
+                <label data-i18n="design.range_f">正向 F</label>
+                <input spellcheck="false" type="text" id="p-f-start" class="mono" style="width:76px" disabled>
+                <span class="muted">—</span>
+                <input spellcheck="false" type="text" id="p-f-end" class="mono" style="width:76px" disabled>
+              </span>
+              <span class="row" style="gap:4px; flex-wrap:nowrap; margin-left:18px">
+                <label data-i18n="design.range_r">反向 R</label>
+                <input spellcheck="false" type="text" id="p-r-start" class="mono" style="width:76px" disabled>
+                <span class="muted">—</span>
+                <input spellcheck="false" type="text" id="p-r-end" class="mono" style="width:76px" disabled>
+              </span>
+            </div>
+          </div>
+          <div class="param-grid" style="margin-bottom:10px">
+            <div class="w2"><label data-i18n="design.tm_minmax">Tm 最低/最优/最高</label>
+              <div class="row"><input spellcheck="false" type="number" id="p-tm_min" step="0.1" style="flex:1"><input spellcheck="false" type="number" id="p-tm_opt" step="0.1" style="flex:1"><input spellcheck="false" type="number" id="p-tm_max" step="0.1" style="flex:1"></div>
+            </div>
+            <div><label data-i18n="design.gc_min">GC 最低(%)</label><input spellcheck="false" type="number" id="p-gc_min" step="0.1"></div>
+            <div><label data-i18n="design.gc_max">GC 最高(%)</label><input spellcheck="false" type="number" id="p-gc_max" step="0.1"></div>
+            <div class="w2"><label data-i18n="design.primer_len_minmax">引物长度 min/max</label>
+              <div class="row"><input spellcheck="false" type="number" id="p-primer_len_min" style="flex:1"><input spellcheck="false" type="number" id="p-primer_len_max" style="flex:1"></div>
+            </div>
+            <div><label data-i18n="design.product_len">产物长度</label>
+              <select id="p-product_len_mode">
+                <option value="absolute" data-i18n="design.product_mode_absolute">绝对值</option>
+                <option value="relative" data-i18n="design.product_mode_relative">相对序列长度</option>
+                <option value="unlimited" data-i18n="design.product_mode_unlimited">不限制</option>
+              </select>
+            </div>
+            <div id="p-product_len-wrap"><label data-i18n="design.product_minmax">产物长度 min/max</label>
+              <div class="row">
+                <input spellcheck="false" type="number" id="p-product_len_min" style="flex:1; min-width:0">
+                <span class="muted">~</span>
+                <input spellcheck="false" type="number" id="p-product_len_max" style="flex:1; min-width:0">
+              </div>
+            </div>
+            <div id="p-product-offset-wrap"><label data-i18n="design.product_offset">产物偏移(±,基准=模板总长)</label>
+              <div class="row">
+                <span class="muted mono">T</span><input spellcheck="false" type="number" id="p-product_offset1" class="mono" style="flex:1; min-width:0">
+                <span class="muted">~</span><input spellcheck="false" type="number" id="p-product_offset2" class="mono" style="flex:1; min-width:0">
+              </div>
+            </div>
+            <div><label data-i18n="design.max_dimer">最大二聚体(bp)</label><input spellcheck="false" type="number" id="p-max_dimer"></div>
+            <div><label data-i18n="design.max_gc_clamp_3p">3' GC 夹子上限</label><input spellcheck="false" type="number" id="p-max_gc_clamp_3p"></div>
+            <div class="w2"><label data-i18n="design.offtarget_product">脱靶产物 min/max</label>
+              <div class="row"><input spellcheck="false" type="number" id="p-offtarget_product_min" style="flex:1"><input spellcheck="false" type="number" id="p-offtarget_product_max" style="flex:1"></div>
+            </div>
+          </div>
+          <div class="hint" id="offtarget-hint" data-i18n="design.offtarget_hint" style="margin-top:8px; margin-bottom:12px; max-width:720px; line-height:1.7"></div>
+          <details>
+            <summary class="hint" data-i18n="design.adv_params">高级参数</summary>
+            <div class="param-grid" style="margin-top:8px; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr))">
+              <div><label data-i18n="design.buffer">可用区两侧缓冲(8 bp)</label><input spellcheck="false" type="number" id="p-buffer_len"></div>
+              <div><label data-i18n="design.release2">阶段二放行阈值(global)</label><input spellcheck="false" type="number" id="p-level2_global_th" step="0.01" min="0" max="1"></div>
+              <div><label data-i18n="design.release3">阶段三放行阈值(global)</label><input spellcheck="false" type="number" id="p-level3_global_th" step="0.01" min="0" max="1"></div>
+              <div><label data-i18n="design.target_buffer">目标缓冲 ±bp</label><input spellcheck="false" type="number" id="p-target_buffer"></div>
+              <div><label data-i18n="design.blast_evalue">blastn E-value</label><input spellcheck="false" type="number" id="p-blast_evalue" step="0.1"></div>
+              <div><label data-i18n="design.blast_max_targets">blastn 最大目标数</label><input spellcheck="false" type="number" id="p-blast_max_targets"></div>
+              <div><label data-i18n="design.timeout_sec">超时(秒)</label><input spellcheck="false" type="number" id="p-timeout_sec"></div>
+              <div><label data-i18n="design.sgrna_len">sgRNA 长度</label><input spellcheck="false" type="number" id="p-sgrna_len"></div>
+              <div><label data-i18n="design.sgrna_pam">sgRNA PAM</label><input spellcheck="false" type="text" id="p-sgrna_pam" class="mono"></div>
+              <div><label><input spellcheck="false" type="checkbox" id="p-sgrna_target_only" style="width:auto"> <span data-i18n="design.sgrna_target_only">sgRNA 引导序列必须位于目标区段内</span></label></div>
+              <div><label data-i18n="design.pool_max">候选池上限</label><input spellcheck="false" type="number" id="p-stage4_pool_max"></div>
+              <div><label data-i18n="design.candidate_count">每阶段候选对数</label><input spellcheck="false" type="number" id="p-candidate_count"></div>
+            </div>
+            <div style="margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+              <span class="muted" id="kmer-cache-count"></span>
+              <button type="button" id="btn-clear-kmer-cache" class="small" data-i18n="design.kmer_cache_clear">清空 k-mer 缓存</button>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <!-- 结果 | Results -->
+      <div id="design-result" style="display:none">
+        <div class="card">
+          <div class="toolbar">
+            <h2 style="margin:0" data-i18n="design.result_title">设计结果</h2>
+            <span class="spacer"></span>
+            <button class="small" id="btn-export-csv" data-i18n="design.export_csv">引物统计(.csv)</button>
+            <button class="small" id="btn-export-fasta" data-i18n="design.export_fasta">引物序列(.fasta)</button>
+            <button class="small" id="btn-copy-fasta" data-i18n="design.copy_fasta">复制引物序列(.fasta)</button>
+          </div>
+          <div id="design-overview"></div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="design.viz_title">设计可视化</h2>
+          <div class="dz-legend">
+            <span><i style="background:var(--ok)"></i><span data-i18n="design.legend_usable">可用(count=1,≥1.0)</span></span>
+            <span><i style="background:var(--warn)"></i><span data-i18n="design.legend_buffer">L2(count 2-3,0.6934~1.0)</span></span>
+            <span><i style="background:#f59e0b"></i><span data-i18n="design.legend_l3">L3(count 4-6,0.5503~0.6934)</span></span>
+            <span><i style="background:var(--err)"></i><span data-i18n="design.legend_masked">屏蔽(count≥7,&lt;0.5503)</span></span>
+            <span><i style="background:var(--accent)"></i><span data-i18n="design.legend_target">目标区域</span></span>
+            <span><i style="background:var(--fg-faint)"></i><span data-i18n="design.legend_range">设计范围外(正/反向均不可设计)</span></span>
+            <span><i class="tri" style="background:var(--err)"></i><span data-i18n="design.legend_fwd">正向引物</span></span>
+            <span><i class="tri" style="background:#c026d3"></i><span data-i18n="design.legend_rev">反向引物</span></span>
+          </div>
+          <canvas id="depth-canvas"></canvas>
+        </div>
+        <div class="card">
+          <h2 data-i18n="design.result_title">引物列表</h2>
+          <div style="max-height:420px; overflow-y:auto" id="pr-table-wrap"></div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="blast.detail_title">详情</h2>
+          <div id="pr-detail"><div class="empty" data-i18n="design.detail_empty">点击引物行查看详情。</div></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="statusbar" id="status-bar">
+    <span class="status-dot"></span>
+    <span class="status-text" data-i18n="status.idle">就绪</span>
+    <span class="progress-wrap" style="display:none"><span class="progress-bar"></span></span>
+    <span class="spacer"></span>
+    <button class="small danger" id="btn-cancel-task" style="display:none" data-action="cancel-task" data-i18n="status.cancel">取消</button>
+  </footer>
+
+  <aside id="log-drawer">
+    <div class="log-head">
+      <h3 data-i18n="log.title">任务日志</h3>
+      <select class="log-filter" id="log-level-filter">
+        <option value="all" data-i18n="log.level_all">全部级别</option>
+        <option value="info">INFO</option>
+        <option value="warn">WARN</option>
+        <option value="error">ERROR</option>
+      </select>
+      <input spellcheck="false" type="search" class="log-filter" id="log-search" placeholder="搜索日志…" data-i18n-ph="log.search">
+      <button class="small" id="btn-log-download" data-i18n="log.download">下载</button>
+      <button class="small btn-close" data-i18n="common.close">关闭</button>
+    </div>
+    <div id="log-list"></div>
+  </aside>
+
+  <div class="modal-mask" id="settings-modal">
+    <div class="modal">
+      <h3 data-i18n="settings.title">设置</h3>
+      <div class="form-item">
+        <label data-i18n="settings.lang">界面语言</label>
+        <select id="set-lang"><option value="zh">中文</option><option value="en">English</option></select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.theme">主题</label>
+        <select id="set-theme">
+          <option value="system" data-i18n="settings.theme_system">跟随系统</option>
+          <option value="light" data-i18n="settings.theme_light">浅色</option>
+          <option value="dark" data-i18n="settings.theme_dark">深色</option>
+        </select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.loglevel">日志级别</label>
+        <select id="set-loglevel"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select>
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.logfile">日志文件</label>
+        <input spellcheck="false" type="text" id="set-logfile" class="mono" placeholder="blastprime.log">
+      </div>
+      <div class="form-item">
+        <label data-i18n="settings.blast_dir">BLAST 可执行文件目录</label>
+        <input spellcheck="false" type="text" id="set-blastdir" class="mono" placeholder="/usr/bin">
+      </div>
+      <div class="m-actions">
+        <button class="danger btn-clear-storage" data-i18n="settings.storage_clear">清空 localStorage</button>
+        <button class="btn-cancel" data-i18n="settings.cancel">取消</button>
+        <button class="primary btn-save" data-i18n="settings.save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/pages/design.js"></script>
+</body>
+</html>

@@ -1,0 +1,342 @@
+/* BlastPrime Studio — 全局样式:主题变量 + 布局 + 组件 | Global styles: theme variables + layout + components */
+
+/* ---------- 主题变量(浅色默认,深色覆盖) | Theme variables (light by default, overridden by dark) ---------- */
+:root {
+  --bg: #f5f6f8;
+  --bg-soft: #eceef1;
+  --card: #ffffff;
+  --fg: #1c2330;
+  --fg-soft: #5a6474;
+  --fg-faint: #8a93a2;
+  --border: #d8dce3;
+  --border-strong: #b8bfca;
+  --accent: #2563eb;
+  --accent-soft: #e8effd;
+  --accent-fg: #ffffff;
+  --slider-outside: #4b5563;   /* 侧翼滑块 范围之外:深灰 */
+  --slider-between: var(--accent);   /* 侧翼滑块 范围之间:与主按钮同蓝 */
+  --ok: #16a34a;
+  --ok-soft: #e4f6ea;
+  --warn: #d97706;
+  --warn-soft: #fdf1de;
+  --err: #dc2626;
+  --err-soft: #fdeaea;
+  --hl-id-bg: #dcfce7;
+  --hl-id-fg: #14532d;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(16, 24, 40, .08);
+  --shadow-lg: 0 8px 24px rgba(16, 24, 40, .14);
+}
+:root:not([data-theme="light"]) .theme-dark,
+:root[data-theme="dark"] {
+  --bg: #12151c;
+  --bg-soft: #191d26;
+  --card: #1d212b;
+  --fg: #e4e8ef;
+  --fg-soft: #9aa3b2;
+  --fg-faint: #6b7484;
+  --border: #2c3240;
+  --border-strong: #3d4556;
+  --accent: #4f8cff;
+  --accent-soft: #1c2c4a;
+  --slider-outside: #6b7484;   /* 深色背景上的灰(范围之外,须亮于底才可见) */
+  --slider-between: var(--accent);   /* 范围之间:同主按钮蓝 */
+  --ok: #34d399;
+  --ok-soft: #123327;
+  --warn: #fbbf24;
+  --warn-soft: #3a2c0e;
+  --err: #f87171;
+  --err-soft: #3b1518;
+  --hl-id-bg: #14532d;
+  --hl-id-fg: #dcfce7;
+  --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, .5);
+}
+/* 跟随系统时 JS 会给 <html> 打 data-theme,此处仅为无 JS 兜底 | When following the system, JS sets data-theme on <html>; this is only a no-JS fallback */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151c; --bg-soft: #191d26; --card: #1d212b;
+    --fg: #e4e8ef; --fg-soft: #9aa3b2; --fg-faint: #6b7484;
+    --border: #2c3240; --border-strong: #3d4556;
+    --accent: #4f8cff; --accent-soft: #1c2c4a;
+    --slider-outside: #6b7484; --slider-between: var(--accent);
+    --ok: #34d399; --ok-soft: #123327;
+    --warn: #fbbf24; --warn-soft: #3a2c0e;
+    --err: #f87171; --err-soft: #3b1518;
+  }
+}
+
+/* ---------- 基础 | Base ---------- */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.mono, textarea, pre, code { font-family: var(--mono); }
+
+/* ---------- 顶部导航 | Top navigation ---------- */
+header.topbar {
+  display: flex; align-items: center; gap: 18px;
+  padding: 0 20px; height: 52px;
+  background: var(--card); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 50;
+}
+.brand { font-weight: 700; font-size: 16px; letter-spacing: .2px; white-space: nowrap; }
+.brand .logo { color: var(--accent); }
+nav.mainnav { display: flex; gap: 4px; flex: 1; }
+nav.mainnav a {
+  color: var(--fg-soft); padding: 6px 14px; border-radius: 6px;
+  font-weight: 500; text-decoration: none; white-space: nowrap;
+}
+nav.mainnav a:hover { background: var(--bg-soft); color: var(--fg); }
+nav.mainnav a.active { background: var(--accent-soft); color: var(--accent); }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+
+/* 环境状态灯 | Environment status light */
+.env-light {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--ok); display: inline-block;
+  box-shadow: 0 0 0 3px var(--ok-soft);
+}
+.env-light.bad { background: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
+.env-label { font-size: 12px; color: var(--fg-soft); }
+
+/* 按钮 | Buttons */
+button, .btn {
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 6px 14px; font: inherit; cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+button:hover, .btn:hover { background: var(--bg-soft); }
+button.primary, .btn.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+}
+button.primary:hover { filter: brightness(1.08); }
+button.danger, .btn.danger { color: var(--err); border-color: var(--err); }
+button.danger:hover { background: var(--err-soft); }
+button:disabled, .btn:disabled { opacity: .45; cursor: not-allowed; }
+button.small, .btn.small { padding: 3px 10px; font-size: 12px; }
+/* 序列工具按钮:比 .small 略大一点 | Sequence tool buttons: slightly larger than .small */
+button.tool-btn, .btn.tool-btn { padding: 5px 13px; font-size: 13px; }
+/* R12 图形摘要分级切换:identity|score 双态按钮组,选中项 accent 高亮 */
+/* R12 graphic-summary grade toggle: identity|score two-state group, active item highlighted with the accent color */
+.grade-btn { border-radius: 0; margin-left: -1px; }
+.grade-btn:first-child { border-radius: 6px 0 0 6px; }
+.grade-btn:last-child { border-radius: 0 6px 6px 0; }
+.grade-btn.active {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+}
+.grade-btn.active:hover { background: var(--accent); filter: brightness(1.08); }
+/* 顶栏语言切换菜单(紧凑尺寸,与 .small 按钮对齐) | Top bar language switch menu (compact size, aligned with .small buttons) */
+select.lang-select {
+  padding: 3px 6px; font-size: 12px; height: 27px; cursor: pointer;
+  border-radius: 4px; background: var(--card); color: var(--fg);
+}
+
+/* 输入控件外观统一(不做 :not(.mono) 排除——否则 class="mono" 的输入框
+   会失去边框圆角等全部外观,只剩字体;等宽字体由下方 input.mono 规则覆盖)
+   Unified input control appearance (no :not(.mono) exclusion — otherwise inputs with
+   class="mono" would lose all appearance such as border radius, leaving only the font;
+   the monospace font is handled by the input.mono rule below) */
+input[type=text], input[type=number], input[type=search], select {
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 6px 10px; font: inherit;
+}
+/* textarea 同款外观但不继承页面字体(保持等宽,见上方 .mono/textarea 规则) | textarea has the same appearance but does not inherit the page font (stays monospace; see the .mono/textarea rule above) */
+textarea {
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 6px 10px;
+}
+/* 等宽输入控件:必须写在输入规则之后——input.mono 与 input[type=text] 同特异性 (0,1,1),
+   靠后者赢:只覆盖字体,外观仍来自上方输入规则。
+   select.mono 无需此规则:select 元素选择器 (0,0,1) 压不过 .mono (0,1,0)
+   Monospace input controls: must be written after the input rules — input.mono and
+   input[type=text] have equal specificity (0,1,1), so the later rule wins: it only
+   overrides the font, while the appearance still comes from the input rules above.
+   select.mono needs no such rule: the select element selector (0,0,1) cannot override .mono (0,1,0) */
+input.mono { font-family: var(--mono); }
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent);
+}
+input.invalid { border-color: var(--err); outline: 2px solid var(--err-soft); }
+input[type=file] { font: inherit; }
+label { font-size: 13px; color: var(--fg-soft); }
+
+/* ---------- 布局 | Layout ---------- */
+main { flex: 1; overflow-y: auto; padding: 20px; }
+.page { max-width: 1280px; margin: 0 auto; }
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 16px 18px; margin-bottom: 16px;
+}
+.card h2 { margin: 0 0 12px; font-size: 15px; }
+.card h3 { margin: 14px 0 8px; font-size: 13px; color: var(--fg-soft); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row.grow > * { flex: 1; }
+.grow { flex: 1; }
+.muted { color: var(--fg-faint); font-size: 12px; }
+.hint { color: var(--fg-soft); font-size: 12.5px; }
+textarea.code {
+  width: 100%; min-height: 140px; resize: vertical;
+  font-size: 12.5px; line-height: 1.45;
+}
+pre.code {
+  background: var(--bg-soft); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px; overflow: auto;
+  font-size: 12.5px; line-height: 1.4; margin: 0;
+}
+.tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+.tag.ok { background: var(--ok-soft); color: var(--ok); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); }
+.tag.err { background: var(--err-soft); color: var(--err); }
+.tag.info { background: var(--accent-soft); color: var(--accent); }
+
+/* 表格 | Tables */
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.data th, table.data td {
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
+  text-align: left; vertical-align: top;
+}
+table.data th { cursor: pointer; user-select: none; white-space: nowrap; color: var(--fg-soft); }
+table.data th:hover { color: var(--fg); }
+table.data tr:hover td { background: var(--bg-soft); }
+table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* 数据库记录表:名称列跨多行,其余列与其垂直居中对齐 | Database records table: the name column spans multiple lines; other columns align vertically centered with it */
+table.data.db-table td { vertical-align: middle; }
+table.data.db-table th { vertical-align: middle; }
+/* 手动排序:整行可拖,手柄列给抓取提示;拖动中半透明,目标行顶边亮条 */
+/* Manual sort: whole row draggable, grab affordance on the handle column; dragged row dimmed, target row gets a top highlight bar */
+table.data.db-table tr[draggable="true"] { cursor: grab; }
+table.data.db-table tr.dragging { opacity: .45; }
+table.data.db-table tr.drop-hint td:first-child { box-shadow: inset 0 2px 0 0 var(--accent); }
+.db-table .drag-handle { cursor: grab; color: var(--fg-faint); user-select: none; font-size: 14px; line-height: 1; }
+
+/* ---------- 底部状态栏 | Bottom status bar ---------- */
+footer.statusbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 20px; min-height: 34px;
+  background: var(--card); border-top: 1px solid var(--border);
+  font-size: 12.5px; color: var(--fg-soft);
+  position: sticky; bottom: 0; z-index: 50;
+}
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-faint); }
+.status-dot.running { background: var(--accent); animation: pulse 1.2s infinite; }
+.status-dot.ok { background: var(--ok); }
+.status-dot.err { background: var(--err); }
+@keyframes pulse { 50% { opacity: .35; } }
+.progress-wrap { flex: 1; max-width: 360px; height: 6px; border-radius: 3px; background: var(--bg-soft); overflow: hidden; }
+.progress-bar { display: block; height: 100%; width: 0; background: #2563eb; background: var(--accent); transition: width .25s; border-radius: 3px; }
+/* 不确定进度(无百分比的长任务,如建库):CSS 动画条纹 | Indeterminate progress (long tasks without a percentage, e.g. database build): CSS animated stripes */
+.progress-bar.indet { width: 40%; animation: indet-slide 1.6s ease-in-out infinite; }
+@keyframes indet-slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+
+/* 构建状态行:spinner + 状态文本 | Build status line: spinner + status text */
+.build-status { font-size: 13px; font-weight: normal; margin-left: 10px; vertical-align: middle; }
+.build-status .spinner {
+  display: inline-block; width: 13px; height: 13px; margin-right: 6px; vertical-align: -2px;
+  border: 2px solid var(--bg-soft); border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.build-status.done { color: var(--ok); }
+.build-status.err { color: var(--err); }
+.statusbar .spacer { flex: 1; }
+
+/* 设计管线步骤条:胶囊序列,当前步 accent 高亮 + spinner,已完成打 ✓ */
+/* Design pipeline step bar: capsule sequence; the active step is accent-highlighted with a spinner, finished steps get a check mark */
+.run-steps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.run-steps .step {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 10px; border-radius: 11px; font-size: 12px;
+  background: var(--bg-soft); color: var(--fg-faint);
+  border: 1px solid var(--border);
+}
+.run-steps .step.done { color: var(--ok); border-color: var(--ok-soft); background: var(--ok-soft); }
+.run-steps .step.active {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+.run-steps .step .spinner {
+  display: inline-block; width: 10px; height: 10px; margin-right: 2px; vertical-align: -1px;
+  border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+/* ---------- 日志抽屉 | Log drawer ---------- */
+#log-drawer {
+  position: fixed; right: 0; top: 0; bottom: 0; width: 460px; max-width: 92vw;
+  background: var(--card); border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg); z-index: 100;
+  display: flex; flex-direction: column;
+  transform: translateX(100%); transition: transform .18s ease;
+}
+#log-drawer.open { transform: translateX(0); }
+.log-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.log-head h3 { margin: 0; flex: none; font-size: 13px; white-space: nowrap; }
+/* 级别/搜索框 flex:1 均分中间空间自然撑开,按钮被推到最右 */
+/* Level/search boxes split the middle space (flex:1), pushing the buttons right */
+.log-filter { flex: 1; min-width: 0; padding: 3px 8px; font-size: 12px; }
+#log-list { flex: 1; overflow-y: auto; padding: 8px 0; font-size: 12.5px; }
+.log-line { padding: 2px 14px; white-space: pre-wrap; word-break: break-all; font-family: var(--mono); }
+.log-line .lt { color: var(--fg-faint); margin-right: 8px; }
+.log-line.info { color: var(--fg-soft); }
+.log-line.warn { color: var(--warn); }
+.log-line.error { color: var(--err); }
+
+/* ---------- 横幅(BLAST 缺失) | Banner (BLAST missing) ---------- */
+#env-banner {
+  display: none; align-items: center; gap: 12px;
+  background: var(--warn-soft); color: var(--warn);
+  padding: 8px 20px; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+#env-banner.show { display: flex; }
+
+/* ---------- 弹层 | Overlays ---------- */
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 200;
+  display: none; align-items: flex-start; justify-content: center;
+  padding: 8vh 16px 16px;
+}
+.modal-mask.show { display: flex; }
+.modal {
+  background: var(--card); border-radius: 10px; box-shadow: var(--shadow-lg);
+  width: 100%; max-width: 560px; max-height: 82vh; overflow-y: auto;
+  padding: 18px 20px;
+}
+.modal h3 { margin: 0 0 12px; }
+.modal .m-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.modal .form-item { margin-bottom: 12px; }
+.modal .form-item label { display: block; margin-bottom: 4px; }
+.modal .form-item input, .modal .form-item select { width: 100%; }
+
+/* 轻提示 | Toast */
+#toast {
+  position: fixed; top: 80px; left: 50%; transform: translateX(-50%);
+  background: var(--fg); color: var(--bg);
+  padding: 8px 18px; border-radius: 6px; font-size: 13px;
+  box-shadow: var(--shadow-lg); z-index: 300; opacity: 0;
+  transition: opacity .15s; pointer-events: none; max-width: 70vw;
+}
+#toast.show { opacity: 1; }
+
+/* 空态 | Empty state */
+.empty { text-align: center; color: var(--fg-faint); padding: 40px 0; font-size: 13px; }
+
+/* 工具条 | Toolbar */
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.toolbar .spacer { flex: 1; }
+
+/* 深色模式下的表单控件兼容 | Form control compatibility in dark mode */
+select option { background: var(--card); color: var(--fg); }

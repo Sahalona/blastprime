@@ -1,0 +1,34 @@
+[project]
+name = "blastprime"
+version = "0.1.0"
+description = "BlastPrime Studio — 本地 BLAST 检索与基因组特异引物设计桌面应用"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "biopython>=1.81",
+    "primer3-py>=2.0.0",
+    "python-multipart>=0.0.9",
+    "pillow>=12.3.0",
+]
+
+[project.scripts]
+blastprime = "blastprime.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["blastprime"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "perf: 性能冒烟测试(默认跳过,uv run pytest -m perf 运行)",
+]
+addopts = "-m 'not perf'"

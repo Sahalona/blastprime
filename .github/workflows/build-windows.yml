@@ -1,0 +1,153 @@
+# Windows .exe 打包:自动获取最新 NCBI BLAST+ 并内嵌全部工具与许可文档,
+# 每次 push 最新 commit 都构建,并将产物发布到 GitHub Releases。
+# Build the Windows .exe: auto-fetch the latest NCBI BLAST+, bundle the
+# full toolset plus its license/docs, build on every push, and publish
+# the artifact to GitHub Releases.
+#
+# 流程:
+#   1. 从 NCBI BLAST+ LATEST 目录索引解析最新版本号(如 2.17.0)
+#   2. 下载 ncbi-blast-<ver>+-x64-win64.tar.gz
+#   3. 解压,复制 bin/ 下全部工具(.exe/.dll/.manifest/.pl)到项目 bin/
+#   4. 复制压缩包根目录的 LICENSE/ChangeLog/README/BLAST_PRIVACY/
+#      ncbi_package_info 到 bin/(随工具打包,不与项目根文档冲突)
+#   5. PyInstaller 打包,产物 BlastPrimeStudio-<版本>-win64.exe
+#   6. 发布到 GitHub Releases:
+#      - 普通 push: 预发布(prerelease),tag = v<版本>-build-<短SHA>
+#      - 推送 v* 标签: 正式发布,tag = 标签名
+name: Build Windows exe
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write        # 创建 GitHub Release 所需
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      # 从 LATEST 目录索引自动识别最新版本号:
+      # index 中的文件名为 ncbi-blast-2.17.0+-x64-win64.tar.gz 等,
+      # 提取所有版本号并按版本排序取最大(不依赖任何已知版本)。
+      # 只提取纯版本号(如 2.17.0):naive 匹配会把 'ncbi-blast-' 前缀
+      # 一起提取,拼 ARCHIVE 时重复前缀 → 404。
+      - name: Resolve latest BLAST+ version
+        id: blast-version
+        shell: bash
+        run: |
+          BLAST_VERSION="$(
+            curl -fsSL "https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/" \
+            | grep -oP '(?<=ncbi-blast-)[0-9]+\.[0-9]+\.[0-9]+(?=\+-x64-win64\.tar\.gz)' \
+            | sort -V | tail -1
+          )"
+          if [ -z "$BLAST_VERSION" ]; then
+            echo "::error::Failed to resolve the latest BLAST+ version from the LATEST index"
+            exit 1
+          fi
+          echo "version=$BLAST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved NCBI BLAST+ version: $BLAST_VERSION"
+
+      - name: Download BLAST+ archive
+        shell: bash
+        run: |
+          VERSION="${{ steps.blast-version.outputs.version }}"
+          ARCHIVE="ncbi-blast-${VERSION}+-x64-win64.tar.gz"
+          curl -fL "https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/${ARCHIVE}" \
+            -o "${ARCHIVE}"
+          ls -lh "${ARCHIVE}"
+
+      - name: Extract and bundle tools + license docs into bin/
+        shell: bash
+        run: |
+          VERSION="${{ steps.blast-version.outputs.version }}"
+          ARCHIVE="ncbi-blast-${VERSION}+-x64-win64.tar.gz"
+          tar -xzf "${ARCHIVE}"
+          SRC="ncbi-blast-${VERSION}+"
+          # 清空旧 bin/ 后复制解压 bin/ 下的全部工具
+          # (exe / dll / manifest / pl 等,全量携带)
+          rm -rf bin
+          mkdir -p bin
+          cp -r "${SRC}/bin/." bin/
+          # BLAST 的许可与说明文档随工具携带(置于 bin/ 内,不与项目根
+          # 目录的 README/LICENSE 冲突;打包后位于 _MEIPASS/bin/ 旁)
+          for doc in LICENSE ChangeLog README BLAST_PRIVACY ncbi_package_info; do
+            if [ -f "${SRC}/${doc}" ]; then
+              cp "${SRC}/${doc}" "bin/${doc}"
+            else
+              echo "::warning::${doc} not found in the archive"
+            fi
+          done
+          ls bin/ | head -30
+          echo "--- bin/ tool count ---"
+          ls bin/ | wc -l
+
+      - name: Build executable with PyInstaller
+        shell: bash
+        run: |
+          # 入口用 run.py(顶层脚本,包内启动 main):
+          # 直接打包 blastprime/app.py 会把相对导入当顶层脚本执行 →
+          # ImportError: attempted relative import with no known parent package
+          pyinstaller --noconfirm --clean --onefile \
+            --name BlastPrimeStudio \
+            --icon build_assets/icon.ico \
+            --add-data "static;static" \
+            --add-data "bin;bin" \
+            run.py
+
+      # 产物与 Release 命名:
+      #   - 普通 push:   版本 = pyproject version,tag = v<版本>-build-<短SHA>,
+      #                  预发布(每次 push 唯一,可重复构建)
+      #   - 推送 v* 标签:版本 = 标签(strip v),tag = 标签名,正式发布
+      - name: Name release
+        id: release-name
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+            PRERELEASE="false"
+          else
+            VERSION="$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)"
+            RELEASE_TAG="v${VERSION}-build-${SHORT_SHA}"
+            PRERELEASE="true"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $RELEASE_TAG (prerelease: $PRERELEASE)"
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release-name.outputs.release_tag }}
+          name: BlastPrimeStudio ${{ steps.release-name.outputs.version }} (${{ steps.release-name.outputs.short_sha }})
+          body: |
+            Windows build artifact (automatic packaging).
+            - NCBI BLAST+ version: ${{ steps.blast-version.outputs.version }}
+            - Commit: ${{ github.sha }}
+            - Bundles the full BLAST+ toolset and its license/docs (under bin/ inside the exe).
+
+            Windows 构建产物（自动打包）。
+            - NCBI BLAST+ 版本：${{ steps.blast-version.outputs.version }}
+            - 提交：${{ github.sha }}
+            - 内置 BLAST+ 全套工具与许可文档（位于 exe 内 bin/）。
+          files: dist/BlastPrimeStudio.exe
+          prerelease: ${{ steps.release-name.outputs.prerelease }}
+          fail_on_unmatched_files: true

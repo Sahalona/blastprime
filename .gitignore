@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 运行时数据目录（config.json + blastdb_*；目录内自带 .gitignore 写 *）
+local_blast_dbs/

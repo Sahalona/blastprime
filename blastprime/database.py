@@ -12,7 +12,7 @@ import shutil
 import string
 from pathlib import Path
 
-from .config import DATA_DIR, get_config
+from .config import get_config, get_data_dir
 
 INDEX_EXTS = [
     "nin", "nsq", "nhr", "pin", "psq", "phr",
@@ -29,7 +29,7 @@ def default_db_dir() -> Path:
     local_blast_dbs/blastdb_<random suffix>/
     """
     suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    return DATA_DIR / f"blastdb_{suffix}"
+    return get_data_dir() / f"blastdb_{suffix}"
 
 
 def validate_db_name(name: str) -> str:
@@ -109,7 +109,7 @@ def physically_delete(prefix: str) -> None:
         # 1) prefix 的父目录正是默认数据目录下的 blastdb_* 目录(避免同名库删错)
         # 1) prefix's parent is a blastdb_* directory under the default data
         #    directory (avoid deleting a same-named database by mistake)
-        if parent.name.startswith("blastdb_") and parent.parent == DATA_DIR and parent.exists():
+        if parent.name.startswith("blastdb_") and parent.parent == get_data_dir() and parent.exists():
             shutil.rmtree(parent, ignore_errors=True)
             found = True
             deleted = 1
@@ -126,8 +126,8 @@ def physically_delete(prefix: str) -> None:
         # 3) 兼容:前缀为 basename 形式(库名),尝试在默认数据目录下找 blastdb_* 匹配
         # 3) Compatibility: prefix is a basename (database name); try to find a
         #    matching blastdb_* under the default data directory.
-        if not found and DATA_DIR.is_dir():
-            for d in DATA_DIR.iterdir():
+        if not found and get_data_dir().is_dir():
+            for d in get_data_dir().iterdir():
                 if d.name.startswith("blastdb_") and (d / (p.name + ".nin")).exists():
                     shutil.rmtree(d, ignore_errors=True)
                     found = True
@@ -151,13 +151,13 @@ def scan_default_dir() -> int:
     companion files that are not yet in the history are added automatically
     (is_created=False). Returns the number newly discovered.
     """
-    if not DATA_DIR.is_dir():
+    if not get_data_dir().is_dir():
         return 0
     cfg = get_config()
     known = {r["prefix"] for r in cfg.db_records()}
     required = {"nin": "nsq", "pin": "psq"}
     found = 0
-    for d in sorted(DATA_DIR.iterdir()):
+    for d in sorted(get_data_dir().iterdir()):
         if not d.is_dir() or not d.name.startswith("blastdb_"):
             continue
         for idx in sorted(d.iterdir()):

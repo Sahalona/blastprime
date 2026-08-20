@@ -48,8 +48,10 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 # 2. 安装依赖（首次）
 pip install -r requirements.txt
 
-# 3. 启动
-python -m blastprime.app         # 或: blastprime(若入口脚本可用)
+# 3. 启动（任选其一）
+python -m blastprime.app         # 模块入口
+python run.py                    # 顶层入口（exe 打包用的同一入口）
+blastprime                       # 仅当 pip 安装过入口脚本时可用
 ```
 
 启动后自动打开浏览器（默认 `http://127.0.0.1:8686`）；未自动打开时访问终端打印的地址即可。
@@ -61,11 +63,11 @@ python -m blastprime.app         # 或: blastprime(若入口脚本可用)
 | 参数 | 说明 | 默认 |
 |---|---|---|
 | `--host` | 监听地址 | `127.0.0.1` |
-| `--port` | 监听端口；被占用则自动顺延并在日志告知 | `8000` |
+| `--port` | 监听端口；被占用则自动顺延并在日志告知 | `8686` |
 | `--no-browser` | 不自动打开浏览器 | 自动打开 |
 | `--loglevel` | `DEBUG` / `INFO` / `WARNING` / `ERROR` | 配置值，缺省 `INFO` |
 | `--logfile <path>` | 同时写入日志文件 | 配置值，缺省不写 |
-| `--config <path>` | 自定义配置文件路径 | `local_blast_dbs/config.json` |
+| `--config <path>` | 本次运行读取指定配置文件（不持久化） | `local_blast_dbs/config.json` |
 
 ### NCBI BLAST+ 定位规则
 
@@ -74,14 +76,32 @@ python -m blastprime.app         # 或: blastprime(若入口脚本可用)
 1. **打包模式（Windows .exe）**：`sys._MEIPASS/bin/`（PyInstaller 解包目录）→ exe 同级 `bin/`
 2. **源码模式**：项目根目录 → 项目根目录下 `bin/` → 系统 `PATH`
 
-找不到时：顶部横幅警告 + "打开安装说明"（NCBI 官方下载、conda/apt/brew 命令）+ "手动指定 BLAST 目录"（持久化）；警告消除前建库/比对/设计按钮置灰。
+找不到时：顶部横幅警告 + "打开安装说明"（内置弹窗）+ "手动指定 BLAST 目录"（持久化）；警告消除前建库/比对/设计按钮置灰。
 
+### 安装 NCBI BLAST+（未随程序携带时）
+
+全部安装包见 https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/ （当前最新 2.17.0）。
+
+**Windows**
+- 运行 `ncbi-blast-2.17.0+-win64.exe` 安装程序——安装器会自动配置 PATH。
+- 或解压 `ncbi-blast-2.17.0+-x64-win64.tar.gz`，在**设置 → 手动指定 BLAST 目录**指向其中的 `bin` 文件夹。
+- 手动添加 PATH（示例 `C:\Program Files\NCBI\blast-2.17.0+\bin`）：设置 → 系统 → 关于 → 高级系统设置 → 环境变量 → 双击 `Path` → 新建 → 粘贴 bin 路径 → 确定。
+
+**Linux**
 ```bash
-# Linux/macOS 安装 BLAST+ 示例
-sudo apt install ncbi-blast+          # Debian/Ubuntu
-brew install blast                    # macOS
-conda install -c bioconda blast       # conda 用户
+sudo apt install ncbi-blast+      # Debian / Ubuntu
+sudo dnf install ncbi-blast+      # Fedora / RHEL
+sudo pacman -S blast              # Arch
 ```
+或解压 `ncbi-blast-2.17.0+-x64-linux.tar.gz`，在设置页手动指定 bin 目录。
+
+**macOS**
+```bash
+brew install blast                # Homebrew
+```
+或解压 `ncbi-blast-2.17.0+-universal-macosx.tar.gz`，在设置页手动指定 bin 目录。
+
+在**设置页手动指定目录**适用于所有平台，无需修改系统 PATH。
 
 ---
 
@@ -163,7 +183,7 @@ conda install -c bioconda blast       # conda 用户
 
 | 阶段 | 策略 |
 |---|---|
-| **第一步** | 整段模板 blastn（E-value 10、max_targets 5000、**禁用 DUST** 以发现重复区）→ 窗口 k-mer（8/10/12/15-mer 逐碱基）计数 → 逐碱基深度 d(i) → 特异性剖面（得分 = count^(-1/3)） |
+| **第一步** | 整段模板 blastn（E-value 10、max_targets 5000）→ 窗口 k-mer（8/10/12/15-mer 逐碱基）计数 → 逐碱基深度 d(i) → 特异性剖面（得分 = count^(-1/3)） |
 | **Level 1** | count=1（唯一）才放行；有产出即成功 |
 | **Level 2** | count 2-3 放行，与 Level 1 累积 |
 | **Level 3** | count 4-6 放行，同样累积 |
@@ -193,8 +213,8 @@ conda install -c bioconda blast       # conda 用户
 
 ### 综合评分（0~100）
 
-- **物理分 60%**：primer3 惩罚分归一 + Tm/GC 达标加减分 + 发夹/二聚体扣分
-- **特异性分 40%**：唯一匹配 = 100、3′ 端豁免 = 80、不可成对 = 60；每个脱靶位点扣分
+- **物理分 50%**：primer3 惩罚分归一 + Tm/GC 达标加减分 + 发夹/二聚体扣分
+- **特异性分 50%**：唯一匹配 = 100、3′ 端豁免 = 80、不可成对 = 60；每个脱靶位点扣分（权重可配置）
 - 降序排列输出；阶段一~三成功时特异性分按目标区单拷贝程度折算
 
 ### 附加模式
@@ -215,11 +235,12 @@ conda install -c bioconda blast       # conda 用户
 ```
 local_blast_dbs/              # 程序数据目录
 ├── config.json               # 全局配置（lang/theme/loglevel/logfile/blast_bin_dir/
-│                             #   db_records/primer_params）
+│                             #   data_dir/db_records/primer_params）
 └── blastdb_<随机后缀>/       # 每个库一个目录（含 .gitignore 写 `*`）
 ```
 
-- **config.json**：语言、主题、日志级别/文件、BLAST 目录、数据库历史、设计参数；损坏时自动备份为 `config.json.bak` 并以默认配置启动
+- **config.json**：语言、主题、日志级别/文件、BLAST 目录、默认数据库存储路径（`data_dir`）、数据库历史、设计参数；损坏时自动备份为 `config.json.bak` 并以默认配置启动
+- **设置页**：可改 `data_dir`（立即生效）；"导入配置/下载配置"整体导入导出（迁移/备份，无引导链）；`--config` 仅本次运行读取指定文件
 - **项目文件 `.json`**：BLAST 结果或引物设计可保存为项目文件（`app: BlastPrimeStudio`、`version: 1`、`kind: blast|primer_design`），可重新加载；损坏内容拒绝加载
 
 ### 导出格式
@@ -249,29 +270,15 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
 
 使用 PyInstaller 打包为双击即用的 Windows exe，**内置 NCBI BLAST+ 全套与前端资源**：
 
-```bash
-pyinstaller --onefile \
-  --add-data "static:static" \
-  --add-data "bin:bin" \
-  --name "BlastPrimeStudio-<版本>-win64" \
-  blastprime/__main__.py
+```bat
+rem 按你的环境修改 P3DIR（primer3 所在目录，可运行 python -c "import primer3,os;print(os.path.dirname(primer3.__file__))" 查询）
+set P3DIR=%LOCALAPPDATA%\Programs\Python\Python314\Lib\site-packages\primer3
+pyinstaller --noconfirm --clean --onefile --name BlastPrimeStudio --icon static\favicon.ico --add-data "static;static" --add-data "bin;bin" --add-data "%P3DIR%\p3helpers.cp314-win_amd64.pyd;primer3" --add-data "%P3DIR%\src\libprimer3\primer3_config;primer3\src\libprimer3\primer3_config" run.py
 ```
 
 - 产物命名 `BlastPrimeStudio-<版本>-win64(.exe)`，版本号遵循语义化版本
 - 打包模式下数据目录建在 exe 同级的可写位置或 `%APPDATA%/BlastPrimeStudio/`（路径显示在设置页）
 - 打包验证用例：全新机器（无 Python/BLAST）双击启动 → 建库 → BLAST → 可视化；四段式引物设计全流程；中文/含空格路径运行
-
----
-
-## 🧪 测试
-
-```bash
-# API 端到端（建库→BLAST→分析→设计三模式→项目→删除，29 项）
-python3 /tmp/bptest/e2e.py          # 需先启动服务器（--no-browser --port 8899）
-
-# 前端逻辑（jsdom，18 项）
-node /tmp/bptest/smoke.js
-```
 
 ---
 

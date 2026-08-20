@@ -585,6 +585,7 @@ def evaluate_primer_pair(
     off_amps = [a for a in amps if not a["is_on_target"]]
 
     # 所有位点(含反向角色类型)中不在目标位点内的部分
+    # Sites (both role types) that fall outside the target loci
     off_sites = [s for s in f_sites + r_sites
                  if not _site_on_target(s, target_loci, buffer)]
     out = {

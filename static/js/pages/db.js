@@ -116,18 +116,40 @@ window.PAGE = {
         // 类型:后端固定 auto,前端类型选择只影响展示提示
         // Type: the backend always uses auto; the frontend type selector only affects display hints
       }, files);
+      // 点击立即进入"正在构建"(乐观状态):文件上传 + 后端接收可能耗时
+      // 1-2s,不能留无反馈的空白;POST 返回真实任务 id 后由 watchBuild
+      // 以真实任务接管(会先清掉乐观轮询,见 watchBuild 开头)
+      // Show the running state immediately on click (optimistic): file
+      // upload + backend acceptance can take 1-2s and must not leave a
+      // feedback gap; once the POST returns the real task id, watchBuild
+      // takes over with the real task (it clears the optimistic poll first)
+      this.watchBuild(null, btn);
       try {
         const { task_id } = await api("/api/db/build", { method: "POST", body: fd });
         this.watchBuild(task_id, btn);
         toast(t("db.build_started") + ": " + name);
-      } catch (e) { toast(e.message); }
+      } catch (e) {
+        // 请求失败:恢复按钮与状态行
+        // Request failed: restore the button and status line
+        if (btn) btn.disabled = false;
+        const status = document.getElementById("build-status");
+        const hint = document.getElementById("build-status-hint");
+        if (status) { status.className = "build-status err"; status.innerHTML = `✗ ${t("db.build_failed")}`; }
+        if (hint) hint.textContent = "";
+        toast(e.message);
+      }
     });
   },
 
   /* 构建进行中:按钮禁用 + 状态行(spinner/秒表/结果),日志实时刷新。
-     大库建库耗时较长,makeblastdb 无逐条进度,秒表让"仍在运行"可见可感。 */
+     大库建库耗时较长,makeblastdb 无逐条进度,秒表让"仍在运行"可见可感。
+     taskId 可为 null(乐观阶段,POST 尚未返回):秒表照走,拿到真实任务
+     id 后再次调用本函数接管(开头会清掉前一个乐观轮询)。 */
   // While building: button disabled + status line (spinner/stopwatch/result), logs refresh live.
   // Building large databases takes a while and makeblastdb has no per-record progress, so the stopwatch makes "still running" visible and tangible.
+  // taskId may be null (optimistic phase, the POST has not returned yet): the
+  // stopwatch still runs; once the real id arrives, call this again to take
+  // over (the previous optimistic poll is cleared at the top).
   watchBuild(taskId, btn) {
     const card = document.getElementById("build-log-card");
     const log = document.getElementById("build-log");
@@ -136,6 +158,7 @@ window.PAGE = {
     card.style.display = "";
     log.textContent = "";
     if (btn) btn.disabled = true;
+    if (this._buildTimer) clearInterval(this._buildTimer);
     this._buildTaskId = taskId;
     this._buildStarted = Date.now();
     this._buildElapsed = null;
@@ -152,17 +175,23 @@ window.PAGE = {
       if (tail) log.textContent = tail;
       log.scrollTop = log.scrollHeight;
     };
-    flush();
+    const running = () => {
+      const secs = Math.floor((Date.now() - started) / 1000);
+      setStatus("", `<span class="spinner"></span>${t("db.build_running", { s: fmt(secs) })}`);
+    };
+    // 乐观状态:任务 id 未到时同样显示"正在构建"(上传窗口不留空白)
+    // Optimistic state: show "building" even before the task id exists —
+    // the upload window must not look blank
+    running();
     hint.textContent = t("db.build_elsewhere");
-    // 每 500ms 轮询任务快照(SSE 已在 App 中实时维护)+ 每秒刷新秒表
-    // Poll the task snapshot every 500ms (SSE is already maintained live in App) + refresh the stopwatch every second
+    // 每 500ms 轮询任务快照(SSE 已在 App 中实时维护)+ 刷新秒表
+    // Poll the task snapshot every 500ms (SSE is already maintained live in App) + refresh the stopwatch
     this._buildTimer = setInterval(() => {
-      const s = App.tasks.get(taskId);
-      if (!s) { clearInterval(this._buildTimer); return; }
-      flush();
-      if (s.status === "running" || s.status === "pending") {
-        const secs = Math.floor((Date.now() - started) / 1000);
-        setStatus("", `<span class="spinner"></span>${t("db.build_running", { s: fmt(secs) })}`);
+      const s = taskId ? App.tasks.get(taskId) : null;
+      if (taskId && !s) { clearInterval(this._buildTimer); return; }
+      if (taskId) flush();
+      if (!s || s.status === "running" || s.status === "pending") {
+        running();
       } else {
         clearInterval(this._buildTimer);
         if (btn) btn.disabled = false;
@@ -251,7 +280,7 @@ window.PAGE = {
   },
 
   recordRow(r, info) {
-    const name = r.prefix.split("/").pop() || r.prefix;
+    const name = basename(r.prefix) || r.prefix;
     const type = info.type === "prot" ? t("db.type_prot") : t("db.type_nucl");
     const created = r.is_created ? `<span class="tag info">${t("db.created_by_app")}</span>` : "";
     const extra = info.seq_count ? `<span class="muted">${info.seq_count} seqs · ${info.total_len} bp</span>` : "";
@@ -343,7 +372,7 @@ window.PAGE = {
   confirmNote(prefix, note) {
     const modal = document.getElementById("note-modal");
     const input = document.getElementById("note-input");
-    const name = prefix.split("/").pop() || prefix;
+    const name = basename(prefix) || prefix;
     document.getElementById("note-prefix").innerHTML =
       `<b style="color:var(--fg)">${escapeHtml(name)}</b> <span class="mono">${escapeHtml(prefix)}</span>`;
     input.value = note || "";
@@ -373,7 +402,7 @@ window.PAGE = {
         api(`/api/db/info?prefix=${encodeURIComponent(prefix)}`).catch(() => null),
         api(`/api/db/entries?prefix=${encodeURIComponent(prefix)}`).catch(() => null),
       ]);
-      const name = prefix.split("/").pop();
+      const name = basename(prefix);
       const lines = [];
       if (info) {
         lines.push(`${name}  (${info.type === "prot" ? t("db.type_prot") : t("db.type_nucl")})`);

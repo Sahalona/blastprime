@@ -320,6 +320,7 @@ footer.statusbar {
 .modal .form-item { margin-bottom: 12px; }
 .modal .form-item label { display: block; margin-bottom: 4px; }
 .modal .form-item input, .modal .form-item select { width: 100%; }
+.modal .form-btns { display: flex; gap: 8px; }
 
 /* 轻提示 | Toast */
 #toast {

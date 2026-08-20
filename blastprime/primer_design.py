@@ -173,7 +173,6 @@ def design_pipeline(
             index = KmerIndex(
                 sequences=[str(r.seq).upper() for r in recs],
                 seq_ids=[r.id for r in recs],
-                use_cache=False,
                 on_log=on_log,
                 cancel=cancel,
             )
@@ -454,6 +453,7 @@ def _design_one(
     cache_key = cache_hit = None
     cache_uncovered = None      # None=无缓存/整体重算;空集=全命中;非空=部分命中
     cache_offset = 0            # 子串命中:当前模板在缓存模板中的偏移
+    # 缓存检测区间之外的未覆盖位置(空集=全覆盖;非空=部分重叠,需重算)
     # Uncovered positions beyond the cached detected ranges (empty set = full
     # coverage; non-empty = partial overlap that must be re-counted)
     if not skip_kmer:

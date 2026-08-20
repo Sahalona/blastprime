@@ -102,11 +102,42 @@ jobs:
           # 入口用 run.py(顶层脚本,包内启动 main):
           # 直接打包 blastprime/app.py 会把相对导入当顶层脚本执行 →
           # ImportError: attempted relative import with no known parent package
+          #
+          # primer3.p3helpers 必须以数据文件方式进包(--add-data),不能靠
+          # 代码显式 import 收集:实测显式收集会以扩展模块注册进包,使
+          # PyInstaller 引导器 longjmp(见 primer_metrics.py 注释)。CI 的
+          # Python 版本决定 pyd 后缀(cp312 等),动态解析路径。
+          # primer3.p3helpers must ship as a data file (--add-data); an
+          # explicit import collects it as a registered extension module,
+          # which crashes the PyInstaller bootloader with "longjmp" (see the
+          # primer_metrics.py comment). CI's Python version decides the pyd
+          # suffix (cp312 etc.), so the path is resolved dynamically.
+          P3HELPERS="$(python - <<'PY'
+          import primer3.p3helpers, os
+          d = os.path.dirname(primer3.p3helpers.__file__)
+          print(os.path.join(d, next(f for f in os.listdir(d)
+                                     if f.startswith('p3helpers') and f.endswith('.pyd'))))
+          PY
+          )"
+          # 热力学参数数据目录:thermoanalysis 初始化时按 __file__ 相对路径
+          # 读 src/libprimer3/primer3_config/(thal_load_parameters),不打进
+          # 包 exe 内初始化失败 → libprimer3 打印 "longjump" 崩溃
+          # Thermodynamic-parameter data dir: thermoanalysis reads
+          # src/libprimer3/primer3_config/ relative to __file__ at init
+          # (thal_load_parameters); without it the exe dies with libprimer3's
+          # "longjump" message
+          P3CFG="$(python - <<'PY'
+          import primer3, os
+          print(os.path.join(os.path.dirname(primer3.__file__), 'src', 'libprimer3', 'primer3_config'))
+          PY
+          )"
           pyinstaller --noconfirm --clean --onefile \
             --name BlastPrimeStudio \
-            --icon build_assets/icon.ico \
+            --icon static/favicon.ico \
             --add-data "static;static" \
             --add-data "bin;bin" \
+            --add-data "${P3HELPERS};primer3" \
+            --add-data "${P3CFG};primer3/src/libprimer3/primer3_config" \
             run.py
 
       # 产物与 Release 命名:

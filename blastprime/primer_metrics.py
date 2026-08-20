@@ -7,7 +7,44 @@ from __future__ import annotations
 
 from typing import Callable
 
-import primer3
+# 从 primer3.bindings 导入:primer3-py 1.x 只在 bindings 下暴露这些函数,
+# 2.x 才在顶层再导出 —— 顶层导入在 1.x 环境报
+# "module 'primer3' has no attribute 'design_primers'"(exe 建库后设计全灭)
+# Import from primer3.bindings: primer3-py 1.x exposes these functions only
+# under bindings; 2.x re-exports them at the top level. A top-level import
+# fails on 1.x with "module 'primer3' has no attribute 'design_primers'",
+# killing every design on such an exe.
+# p3_ 前缀别名:本模块自带 design_primers 包装(下方),裸名导入会被覆盖。
+# 必须从 primer3.bindings 直接导入(不走顶层):primer3-py 2.3.0 的顶层导出
+# 包在 `try: ... except BaseException: pass` 里 —— exe 内 thermoanalysis 因
+# p3helpers 缺失初始化失败时,顶层导出被静默吞掉,`import primer3` 成功但
+# 没有 design_primers(报 "no attribute");bindings 是底层模块,无此包装。
+# The p3_ aliases avoid shadowing: this module defines its own design_primers
+# wrapper below, which would override a bare import. Import from
+# primer3.bindings directly (not the top level): primer3-py 2.3.0 wraps its
+# top-level exports in `try: ... except BaseException: pass` — when
+# thermoanalysis fails to init (missing p3helpers) inside the exe, the
+# top-level exports are silently dropped, so `import primer3` succeeds
+# without design_primers ("no attribute"). bindings has no such wrapper.
+from primer3.bindings import (calc_hairpin as p3_calc_hairpin,
+                              calc_tm as p3_calc_tm,
+                              design_primers as p3_design_primers)
+
+# PyInstaller 打包注意:thermoanalysis(.pyx 编译产物)初始化时 import
+# primer3.p3helpers,而 PyInstaller 静态分析读不到 .pyx 源码 → p3helpers
+# 漏打包,exe 内 thermoanalysis 加载失败。**不能**用显式 import 让分析器
+# 收集它:实测 p3helpers 以扩展模块注册进包会使 PyInstaller 引导器
+# longjmp(1.txt/2.txt 归档对比确认唯一差异)。正确做法是打包命令用
+# --add-data 把 p3helpers 的 .pyd 以数据文件放进包(见 README 打包命令),
+# 运行时由 thermoanalysis 内部的 import 经标准路径搜索加载。
+# PyInstaller note: thermoanalysis (a compiled .pyx) imports primer3.p3helpers
+# at init, but the analyzer cannot read .pyx sources, so p3helpers is missed.
+# Do NOT collect it via an explicit import: bundling p3helpers as a
+# registered extension module crashes the PyInstaller bootloader with
+# "longjmp" (confirmed by archive diffs). Instead the build command ships
+# p3helpers' .pyd as a data file via --add-data (see the README build
+# command); thermoanalysis' internal import then finds it through the
+# standard path search.
 
 from .config import DEFAULT_PRIMER_PARAMS
 
@@ -28,7 +65,7 @@ def tm(seq: str, method: str = "primer3") -> tuple[float, str]:
     if len(s) < 14:
         val = 2.0 * (s.count("A") + s.count("T")) + 4.0 * (s.count("G") + s.count("C"))
         return val, "2×(A+T)+4×(G+C)"
-    return round(primer3.calc_tm(s), 2), "primer3 盐校正模型"
+    return round(p3_calc_tm(s), 2), "primer3 盐校正模型"
 
 
 def gc(seq: str) -> float:
@@ -82,7 +119,7 @@ def hairpin_stats(seq: str) -> dict:
     """
     s = seq.upper()
     try:
-        r = primer3.calc_hairpin(s)
+        r = p3_calc_hairpin(s)
         delta = float(r.dg)
         stem = int(r.stem_length) if hasattr(r, "stem_length") else 0
         return {"stem_len": stem, "dg": delta}
@@ -342,7 +379,7 @@ def design_primers(
     }
 
     try:
-        res = primer3.design_primers(seq_args, global_args)
+        res = p3_design_primers(seq_args, global_args)
     except OSError:
         # 输入校验拒绝(排除区把可用区压缩到产物下限以下等)→ 无候选
         # Input validation rejected (excluded regions shrink the usable

@@ -411,6 +411,7 @@ const App = {
     m.querySelector("#set-loglevel").value = s.loglevel || "INFO";
     m.querySelector("#set-logfile").value = s.logfile || "";
     m.querySelector("#set-blastdir").value = s.blast_bin_dir || "";
+    m.querySelector("#set-datadir").value = s.data_dir || "";
     m.classList.add("show");
   },
 
@@ -426,24 +427,82 @@ const App = {
       loglevel: m.querySelector("#set-loglevel").value,
       logfile: m.querySelector("#set-logfile").value,
       blast_bin_dir: m.querySelector("#set-blastdir").value,
+      data_dir: m.querySelector("#set-datadir").value,
     };
     try {
       this.settings = await api("/api/settings", { method: "POST", json: true, body });
-      setLang(this.settings.lang);
-      applyTheme(this.settings.theme);
-      // 设置对话框保存后,顶栏临时切换按钮同步为持久化主题,并清除 localStorage 临时状态(回到跟随系统)
-      // After saving from the settings dialog, sync the temporary top-bar toggle to the persisted theme and clear the localStorage temporary state (back to following the system)
-      const tb = document.getElementById("theme-switch");
-      if (tb) {
-        renderThemeSwitch(this.settings.theme || "system");
-        delete tb.dataset.manual;
-      }
-      try { localStorage.removeItem("bp_uitmp"); } catch (e) {}
+      this.applySettingsUI();
       this.checkEnv();
       this.closeSettings();
       toast(t("settings.saved"));
     } catch (e) {
       toast(e.message || t("common.save_failed"));
+    }
+  },
+
+  /* 设置保存/导入后同步界面:语言、主题、顶栏切换按钮、清除 localStorage 临时状态。
+     保存后顶栏临时主题回到跟随系统(见设置对话框注释)。 */
+  // Sync the UI after settings save/import: language, theme, the top-bar
+  // toggle button, and clearing the localStorage temporary state (the toggle
+  // returns to following the system after saving from the dialog)
+  applySettingsUI() {
+    setLang(this.settings.lang);
+    applyTheme(this.settings.theme);
+    const tb = document.getElementById("theme-switch");
+    if (tb) {
+      renderThemeSwitch(this.settings.theme || "system");
+      delete tb.dataset.manual;
+    }
+    try { localStorage.removeItem("bp_uitmp"); } catch (e) {}
+  },
+
+  /* 导入配置:选择 config.json → 后端整体应用并保存到当前配置文件。
+     导入内容中的路径字段不会改变程序配置文件的位置(数据目录或 --config)。 */
+  // Import config: pick a config.json → the backend applies it wholesale and
+  // persists to the current config file. Path fields inside it never change
+  // where the program's config file lives (data dir or --config).
+  importConfig() {
+    document.getElementById("config-file-input")?.click();
+  },
+
+  async onConfigFileSelected() {
+    const input = document.getElementById("config-file-input");
+    const f = input && input.files && input.files[0];
+    if (!f) return;
+    let text;
+    try { text = await f.text(); } catch (e) { toast(t("common.read_failed")); return; }
+    try {
+      this.settings = await api("/api/config/import", { method: "POST", json: true, body: { content: text } });
+      this.applySettingsUI();
+      this.checkEnv();
+      this.closeSettings();
+      toast(t("settings.config_imported"));
+    } catch (e) {
+      toast(e.message || t("common.save_failed"));
+    } finally {
+      input.value = "";
+    }
+  },
+
+  /* 下载配置:当前完整配置存为 JSON 附件,可备份或跨机器回读(导入配置)。
+     与日志下载同模式(blob → 临时 a 标签)。 */
+  // Download config: the full current config as a JSON attachment for backup
+  // or re-import on another machine. Same pattern as the log download
+  // (blob → temporary anchor).
+  async downloadConfig() {
+    try {
+      const res = await fetch("/api/config/download");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "BlastPrimeStudio-config.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast(t("common.download_failed"));
     }
   },
 
@@ -575,8 +634,16 @@ const App = {
     document.getElementById("settings-modal")?.addEventListener("click", (e) => {
       if (e.target.id === "settings-modal") this.closeSettings();
     });
+    document.getElementById("guide-modal")?.addEventListener("click", (e) => {
+      if (e.target.id === "guide-modal") modalHide(document.getElementById("guide-modal"));
+    });
+    document.querySelector("#guide-modal .btn-close")?.addEventListener("click", () =>
+      modalHide(document.getElementById("guide-modal")));
     document.querySelector("#settings-modal .btn-save")?.addEventListener("click", () => this.saveSettings());
     document.querySelector("#settings-modal .btn-cancel")?.addEventListener("click", () => this.closeSettings());
+    document.getElementById("btn-config-import")?.addEventListener("click", () => this.importConfig());
+    document.getElementById("config-file-input")?.addEventListener("change", () => this.onConfigFileSelected());
+    document.getElementById("btn-config-download")?.addEventListener("click", () => this.downloadConfig());
     // 清空 localStorage(三页同构,共享 handler)
     // Clear localStorage (same markup on all three pages, shared handler)
     document.querySelectorAll("#settings-modal .btn-clear-storage").forEach((btn) => {
@@ -590,8 +657,16 @@ const App = {
     catch (e) { toast(e.message || t("common.cancel_failed")); }
   },
 
+  /* 安装指引:内置弹窗(不再打开不存在的 /static/guide.html)。
+     i18n 键 guide.content 为多行文本,经 pre 原样渲染(含链接与命令)。 */
+  // Install guide: built-in modal (the old /static/guide.html never existed).
+  // The i18n key guide.content is multi-line text rendered verbatim in a <pre>.
   showGuide() {
-    window.open("/static/guide.html", "_blank");
+    const modal = document.getElementById("guide-modal");
+    if (!modal) return;
+    const pre = document.getElementById("guide-content");
+    if (pre) pre.textContent = t("guide.content");
+    modalShow(modal);
   },
 
   /* ================= 全局项目保存/加载(guide.md 9.4,保存 blast 与引物设计页全部输入输出) ================= */
@@ -864,6 +939,15 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+}
+
+/* 路径 basename(兼容 Windows 反斜杠与 POSIX 斜杠):库前缀显示名/名称型
+   database= 引用都用它 —— 只按 "/" 切分在 Windows 上会显示完整路径。 */
+// Path basename (Windows backslash + POSIX slash aware): used for the
+// database display name and name-style `database=` refs — splitting on "/"
+// only shows the full path on Windows.
+function basename(path) {
+  return String(path ?? "").split(/[\\/]/).pop() || "";
 }
 
 function applyTheme(theme) {

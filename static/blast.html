@@ -325,10 +325,30 @@
         <label data-i18n="settings.blast_dir">BLAST 可执行文件目录</label>
         <input spellcheck="false" type="text" id="set-blastdir" class="mono" placeholder="/usr/bin">
       </div>
+      <div class="form-item">
+        <label data-i18n="settings.data_dir">默认数据库存储路径</label>
+        <input spellcheck="false" type="text" id="set-datadir" class="mono">
+      </div>
+      <div class="form-btns">
+        <button type="button" class="small" id="btn-config-import" data-i18n="settings.config_import">导入配置</button>
+        <button type="button" class="small" id="btn-config-download" data-i18n="settings.config_download">下载配置</button>
+        <input type="file" id="config-file-input" accept=".json,application/json" style="display:none">
+      </div>
       <div class="m-actions">
         <button class="danger btn-clear-storage" data-i18n="settings.storage_clear">清空 localStorage</button>
         <button class="btn-cancel" data-i18n="settings.cancel">取消</button>
         <button class="primary btn-save" data-i18n="settings.save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 安装指引模态 | Install-guide modal -->
+  <div class="modal-mask" id="guide-modal">
+    <div class="modal">
+      <h3 data-i18n="guide.title">安装 NCBI BLAST+</h3>
+      <pre class="code" id="guide-content" style="max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-all"></pre>
+      <div class="m-actions">
+        <button class="btn-close" data-i18n="common.close">关闭</button>
       </div>
     </div>
   </div>

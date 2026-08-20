@@ -279,7 +279,7 @@ window.PAGE = {
       // R12: no "select a local database..." placeholder option; when there
       // are no records, a disabled hint option is shown instead
       sel.innerHTML = records.map((r) => {
-        const name = r.prefix.split("/").pop();
+        const name = basename(r.prefix);
         const label = r.note ? `${name}（${r.note}）` : name;
         return `<option value="${escapeHtml(r.prefix)}" title="${escapeHtml(r.prefix)}">${escapeHtml(label)}</option>`;
       }).join("");
@@ -1292,7 +1292,7 @@ window.PAGE = {
     if (!name) { toast(t("blast.copy_name_single")); return; }
     const s1 = Math.min(h.sstart, h.send);
     const s2 = Math.max(h.sstart, h.send);
-    copyText(`>${name},range=${s1}-${s2},database=${db.split("/").pop()}`);
+    copyText(`>${name},range=${s1}-${s2},database=${basename(db)}`);
   },
 
   /* ---------------- 项目保存/加载(guide 9.4,顶栏全局按钮) ---------------- */

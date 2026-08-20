@@ -16,6 +16,7 @@ run_proc kills the subprocess → the context manager cleans up temporary files.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 import uuid
@@ -23,6 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
 from .blast import BlastError, CancelFlag
+
+log = logging.getLogger("blastprime")
 
 STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
@@ -96,6 +99,7 @@ class TaskManager:
                     self._tasks.pop(t.id, None)
 
         def _run() -> None:
+            log.info("任务开始 %s(%s): %s", task.id, kind, title)
             try:
                 result = worker(task._flag,
                                 lambda msg, level="info": self.log(task.id, msg, level),
@@ -106,9 +110,24 @@ class TaskManager:
                     self._finish(task.id, status=STATUS_SUCCEEDED, result=result)
             except BlastError as e:
                 status = STATUS_CANCELLED if task._flag.cancelled else STATUS_FAILED
-                self._finish(task.id, status=status, error=str(e))
+                msg = str(e)
+                if status == STATUS_FAILED:
+                    # 失败详情(含 BLAST 子进程输出尾部)进任务日志(ERROR 级)与日志文件,
+                    # 前端日志抽屉直接可见,不再只有任务状态栏里一行错误
+                    # Failure detail (incl. the BLAST child-process output tail)
+                    # goes to the task log (ERROR level) and the log file — the
+                    # frontend log drawer shows it, not just one error line
+                    self.log(task.id, f"任务失败: {msg}", "error")
+                    log.error("任务失败 %s(%s): %s", task.id, kind, msg)
+                self._finish(task.id, status=status, error=msg)
             except Exception as e:  # noqa: BLE001 — 兜底记录一切失败 (catch-all that records any failure)
-                self._finish(task.id, status=STATUS_FAILED, error=str(e))
+                # traceback 写日志文件(未预期异常的唯一排查途径)
+                # the traceback goes to the log file — the only way to debug
+                # unexpected exceptions
+                log.exception("任务异常 %s(%s)", task.id, kind)
+                msg = str(e) or "未知异常(详见日志文件)"
+                self.log(task.id, f"任务异常: {msg}", "error")
+                self._finish(task.id, status=STATUS_FAILED, error=msg)
 
         task._thread = threading.Thread(target=_run, daemon=True, name=f"task-{task.id}")
         task._thread.start()

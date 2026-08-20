@@ -408,7 +408,7 @@ window.PAGE = {
         return na - nb;
       });
       sel.innerHTML = sorted.map((r) => {
-        const name = r.prefix.split("/").pop();
+        const name = basename(r.prefix);
         const label = r.note ? `${name}（${r.note}）` : name;
         return `<option value="${escapeHtml(r.prefix)}" title="${escapeHtml(r.prefix)}">${escapeHtml(label)}</option>`;
       }).join("");
@@ -526,6 +526,15 @@ window.PAGE = {
       this.sliders.f.set(this.named.f[0], this.named.f[1], null);
     if (this.named.r && this.named.r[0] >= this.sliders.r.minV && this.named.r[1] <= this.sliders.r.maxV)
       this.sliders.r.set(this.named.r[0], this.named.r[1], null);
+    // 无保存范围(或旧坐标帧被丢弃)时回默认:写回滑块当前位置,否则
+    // syncRangeInputs 读 named.f[0] 对 null 抛 TypeError,四个输入框
+    // 空着禁用,直到首次拖动滑块(onSet 先写值)才出现内容
+    // No saved ranges (or an old coordinate frame was dropped): fall back to
+    // the sliders' current positions. Without this, syncRangeInputs throws
+    // on named.f[0] === null and the four boxes stay empty and disabled
+    // until the first slider drag (onSet writes the values first)
+    if (!this.named.f) this.named.f = [this.sliders.f.start, this.sliders.f.end];
+    if (!this.named.r) this.named.r = [this.sliders.r.start, this.sliders.r.end];
     this.syncRangeInputs();
     this.renderTmplInfo();
   },

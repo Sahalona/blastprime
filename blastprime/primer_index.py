@@ -15,8 +15,12 @@
 - 构建性能:序列预编码为 2-bit 字节表,滚动窗口一次产出 k_eff-mer 及其
   全部前缀 k-mer(同一开始位置的各尺度 k-mer 互为前缀),反向互补用
   预计算查表(5/8/10-mer)或 O(k) 函数(12/15-mer)。
-- pickle 缓存:DATA_DIR/.primer_index/<sha1>.pkl,签名 = index_version +
-  kmer_set + seed_k + 各库索引文件 (mtime_ns, size);库变化自动失效。
+
+> 本类只从**模板序列**构建(自重复分量);基因组特异性的主信号是第一步
+> 窗口 blastn 深度(kmer_count)。早期版本支持从整个 BLAST 库构建并带
+> pickle 持久缓存(.primer_index/),该路径已随设计流程改版彻底移除——
+> 全库扫描被窗口 blastn 计数取代,缓存读写(含配置键 index_version /
+> index_cache_enabled)成为遗留代码,一并删除。
 
 复杂度(§67):index build O(KD)(两趟扫描);target 扫描 O(KN);
 per-base profile O(KN)(差分数组);局部验证 O(HL)。内存 O(KD),唯一区近零。
@@ -27,23 +31,12 @@ Multi-scale k-mer specificity index and per-base specificity profile
 
 from __future__ import annotations
 
-import hashlib
-import io
 import math
-import os
-import pickle
-import tempfile
 from array import array
-from pathlib import Path
 from typing import Callable
-
-from Bio import SeqIO
 
 from . import blast
 from .blast import CancelFlag
-from .config import DATA_DIR
-
-INDEX_VERSION = 1
 
 # 2-bit 编码:00=A 01=C 10=G 11=T;255 = 非 ACGT(N 等,不参与计数)
 # 2-bit encoding: 00=A 01=C 10=G 11=T; 255 = non-ACGT (N etc., not counted)
@@ -130,26 +123,31 @@ def kmer_occurrence_score(count: int) -> float:
 
 
 class KmerIndex:
-    """数据库多尺度 k-mer 索引。
+    """模板序列的多尺度 k-mer 计数索引(自重复分量)。
 
-    ``db_prefix`` 路径从真实 BLAST 库构建(带 pickle 缓存);
-    ``sequences`` 路径直接从序列列表构建(单元测试/无 blastdbcmd 环境用)。
+    从序列列表直接构建;不读数据库、无持久缓存 —— 基因组特异性主信号由
+    第一步窗口 blastn 深度(kmer_count)提供,本索引只捕获模板内部自重复
+    (串联重复/微卫星,blastn 深度会把这些合并为单一位点)。
+
+    Template-only multi-scale k-mer counting index (the self-repeat
+    component). Built directly from sequences; never reads the database and
+    has no persistent cache — genome-wide specificity comes from the step-1
+    windowed blastn depth (kmer_count), this index only recovers self-repeats
+    inside the template (tandem repeats/microsatellites that windowed blastn
+    depth merges into single loci).
     """
 
     def __init__(
         self,
-        db_prefix: str | None = None,
-        sequences: list[str] | None = None,
+        sequences: list[str],
         seq_ids: list[str] | None = None,
         kmer_set: tuple[int, ...] = (8, 10, 12, 15),
         seed_k: int = 12,
         three_prime_windows: tuple[int, ...] = (8, 10, 12, 15),
-        use_cache: bool = True,
         on_log: Callable[[str], None] | None = None,
         on_progress: Callable[[float], None] | None = None,
         cancel: CancelFlag | None = None,
     ):
-        self.db_prefix = db_prefix
         self.kmer_set = tuple(sorted(set(kmer_set)))
         self.seed_k = seed_k
         self.three_prime_windows = tuple(sorted(set(three_prime_windows)))
@@ -160,80 +158,9 @@ class KmerIndex:
         self.count_ks = tuple(sorted(set(self.kmer_set) | set(self.three_prime_windows)))
         self.counts: dict[int, object] = {}   # k -> array('I') 或 dict(canonical->count)
         self.positions: dict[int, list[tuple[int, int, int]]] = {}
-        self.cached = False
-
-        if sequences is not None:
-            self._build_from_sequences(sequences, seq_ids or [],
-                                       on_log=on_log, on_progress=on_progress,
-                                       cancel=cancel)
-            return
-        if not db_prefix:
-            raise ValueError("KmerIndex 需要 db_prefix 或 sequences 之一")
-
-        sig = self._signature(db_prefix)
-        cache_path = self._cache_path(db_prefix, sig)
-        if use_cache and cache_path.exists():
-            try:
-                obj = pickle.loads(cache_path.read_bytes())
-                if (obj.get("index_version") == INDEX_VERSION
-                        and obj.get("signature") == sig
-                        and tuple(obj.get("kmer_set", ())) == self.kmer_set
-                        and obj.get("seed_k") == seed_k):
-                    self.sequences = obj["sequences"]
-                    self.seq_ids = obj["seq_ids"]
-                    self.counts = obj["counts"]
-                    self.positions = obj["positions"]
-                    self.cached = True
-                    if on_log:
-                        on_log(f"命中 k-mer 索引缓存: {cache_path.name}")
-                    return
-            except Exception:
-                pass  # 缓存损坏 → 重建 (corrupt cache → rebuild)
-
-        self._build_from_db(db_prefix, on_log=on_log, on_progress=on_progress,
-                            cancel=cancel)
-        if use_cache:
-            try:
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                payload = {
-                    "index_version": INDEX_VERSION,
-                    "signature": sig, "kmer_set": list(self.kmer_set),
-                    "seed_k": seed_k, "seq_ids": self.seq_ids,
-                    "sequences": self.sequences, "counts": self.counts,
-                    "positions": self.positions,
-                }
-                fd, tmp = tempfile.mkstemp(dir=str(cache_path.parent),
-                                           prefix=".idx_", suffix=".pkl")
-                with os.fdopen(fd, "wb") as f:
-                    pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-                os.replace(tmp, cache_path)   # 原子替换,并发双建无害 (atomic; racing double-build harmless)
-            except OSError:
-                pass
-
-    # ------------------------------------------------------------ 签名与缓存
-
-    @staticmethod
-    def _signature(db_prefix: str) -> str:
-        """库文件 (mtime_ns, size) 签名;任一索引文件变化即失效。
-
-        Database-file (mtime_ns, size) signature; any index-file change
-        invalidates the cache.
-        """
-        parts = [f"v{INDEX_VERSION}"]
-        p = Path(db_prefix)
-        for ext in ("nin", "pin", "nsq", "psq", "nhr", "phr"):
-            f = p.with_suffix("." + ext)
-            try:
-                st = f.stat()
-                parts.append(f"{ext}:{st.st_mtime_ns}:{st.st_size}")
-            except OSError:
-                pass
-        return hashlib.sha1("|".join(parts).encode()).hexdigest()
-
-    @staticmethod
-    def _cache_path(db_prefix: str, sig: str) -> Path:
-        name = Path(db_prefix).name
-        return DATA_DIR / ".primer_index" / f"{name}_{sig}.pkl"
+        self._build_from_sequences(sequences, seq_ids or [],
+                                   on_log=on_log, on_progress=on_progress,
+                                   cancel=cancel)
 
     # ------------------------------------------------------------ 构建 (Build)
 
@@ -243,25 +170,6 @@ class KmerIndex:
         if on_log:
             on_log(f"构建 k-mer 索引: {len(self.sequences)} 条序列, "
                    f"{sum(map(len, self.sequences))} bp, k={self.count_ks}")
-        self._scan(0.0, 1.0, on_progress, cancel)
-
-    def _build_from_db(self, db_prefix, on_log, on_progress, cancel):
-        if on_log:
-            on_log(f"构建 k-mer 索引: {db_prefix} ...")
-        # 取全库序列(一次 blastdbcmd,§37 序列访问)
-        # Fetch all sequences in one blastdbcmd call (§37 sequence access)
-        fa = blast.fetch_entry(db_prefix, "all")
-        seqs: list[str] = []
-        ids: list[str] = []
-        for rec in SeqIO.parse(io.StringIO(fa), "fasta"):
-            if cancel is not None and cancel.cancelled:
-                raise blast.BlastError("任务已取消")
-            seqs.append(str(rec.seq).upper())
-            ids.append(str(rec.id))
-        if on_log:
-            on_log(f"库序列 {len(seqs)} 条 / {sum(map(len, seqs))} bp")
-        self.sequences = seqs
-        self.seq_ids = ids
         self._scan(0.0, 1.0, on_progress, cancel)
 
     def _scan(self, t0: float, t1: float, on_progress, cancel) -> None:

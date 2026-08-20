@@ -85,16 +85,17 @@ GC（40-60 绿/30-40 或 60-70 黄/其余红）、Tm（50-65 绿/45-50 或 65-70
 ## 文件与配置格式
 
 - 项目文件 .json（GUIDE.md 9.4）：`app: "BlastPrimeStudio"`、`version: 1`、`kind: blast|primer_design`、raw_output/parsed/options/primer_design 段；加载校验 app 与 version，损坏不崩溃
-- config.json：lang/theme/loglevel/logfile/blast_bin_dir/db_records/primer_params；损坏时备份为 `config.json.bak` 并默认配置启动
+- config.json：lang/theme/loglevel/logfile/blast_bin_dir/data_dir/db_records/primer_params；损坏时备份为 `config.json.bak` 并默认配置启动
+- 数据目录：源码模式 = 项目根 `local_blast_dbs/`；打包模式 = exe 同级 `local_blast_dbs/`（不可写时 `%APPDATA%/BlastPrimeStudio/`）；设置页可改 data_dir（建库默认存储，立即生效）；配置迁移/备份 = 设置页"导入配置/下载配置"（整体导入导出，无引导链）；`--config <path>` 仅本次运行读取指定配置（不持久化），旧版 config_path 键载入时剔除
 - CSV 均 UTF-8 with BOM；引物统计表表头见 GUIDE.md 9.5
 
 ## 错误处理要点
 
-BLAST 缺失→横幅+置灰；库文件缺失→错误弹窗含完整路径；FASTA 非法→红框+定位非法行；建库失败→stderr 全文；设计失败→失败阶段+重复度统计+建议放宽参数；任务取消→"已取消"+清理进程；配置损坏→备份+恢复默认+状态栏提示。
+BLAST 缺失→横幅+置灰；库文件缺失→错误弹窗含完整路径；FASTA 非法→红框+定位非法行；建库失败→stderr 全文（完整输出进日志文件 + 尾部 40 行进任务日志 error 级，日志抽屉可见）；任务异常→traceback 进日志文件；配置写入失败→HTTP 500 带详情（不再静默吞掉）；导入配置失败→错误弹窗（非法 JSON/根节点非对象/写入失败）；任务取消→"已取消"+清理进程；配置损坏→备份+恢复默认+状态栏提示。启动时打印/记录数据目录与配置文件路径。
 
 ## 打包
 
-PyInstaller，Windows exe 内置 bin/（BLAST+ 全套）与 static/；数据目录放 exe 同级可写位置或 %APPDATA%/BlastPrimeStudio/；产物命名 `BlastPrimeStudio-<版本>-win64(.exe)`。打包验证用例见 GUIDE.md 11.2。
+PyInstaller，Windows exe 内置 bin/（BLAST+ 全套）与 static/；数据目录放 exe 同级可写位置或 %APPDATA%/BlastPrimeStudio/（**绝不能解析到 sys._MEIPASS——onefile 临时解包目录，退出即失**）；产物命名 `BlastPrimeStudio-<版本>-win64(.exe)`。打包验证用例见 GUIDE.md 11.2。primer3 打包必须带两个 --add-data：① p3helpers.pyd 以数据文件进包（显式 import 收集 → 引导器 longjmp）；② primer3_config 热力学参数目录（缺 → libprimer3 "longjump" 崩溃）；命令见 README 打包节。
 
 ## 验收清单
 

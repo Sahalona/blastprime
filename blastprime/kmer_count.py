@@ -358,6 +358,7 @@ def count_window_occurrences(
     qid_index = {q: i for i, q in enumerate(qids)}
     scales = sorted(by_k.keys())
     # 预构建各尺度查找表(单遍扫描共用)
+    # Prebuild per-scale lookup tables (shared across the single-pass scans)
     pow4s: dict[int, np.ndarray] = {}
     hash2kmers: dict[int, dict[int, str]] = {}
     lookups: dict[int, tuple] = {}
@@ -396,6 +397,7 @@ def count_window_occurrences(
                              by_k[k], lookups[k], out_by_k[k], qid_index,
                              forward=False, cancel=cancel)
         # 进度按条目推进(单遍,每 5% 一次)
+        # Progress advances per entry (single pass, once every 5%)
         if on_progress and (i % log_step == 0 or i == len(entries)):
             on_progress(i / len(entries))
         if on_log and i % log_step == 0:

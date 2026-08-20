@@ -5,3 +5,6 @@ __pycache__/
 
 # 运行时数据目录（config.json + blastdb_*；目录内自带 .gitignore 写 *）
 local_blast_dbs/
+
+# NCBI BLAST+ 工具(CI 工作流下载解压;打包时 --add-data 进 exe)
+bin/

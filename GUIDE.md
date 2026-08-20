@@ -99,7 +99,7 @@ BlastPrimeStudio/
 
 1. `python3 -m venv .venv` 创建虚拟环境并激活(`source .venv/bin/activate`,Windows 为 `.venv\Scripts\activate`);
 2. `pip install -r requirements.txt` 安装依赖(依赖清单与 pyproject.toml 同步维护);
-3. `python -m blastprime.app` 启动(入口脚本 `blastprime` 在 pip 安装后同样可用)。
+3. `python -m blastprime.app` 或 `python run.py` 启动(顶层入口 `run.py` 与 PyInstaller 打包共用;入口脚本 `blastprime` 在 pip 安装后同样可用)。
 4. 启动后自动打开浏览器;若未打开,手动访问终端打印的地址(默认 `http://127.0.0.1:8686`)。
 
 ### 2.2 命令行参数
@@ -111,7 +111,7 @@ BlastPrimeStudio/
 | `--no-browser` | 不自动打开浏览器 | 自动打开 |
 | `--loglevel` | 日志级别:`DEBUG` / `INFO` / `WARNING` / `ERROR` | 配置值,缺省 `INFO` |
 | `--logfile <path>` | 将日志同时写入指定文件 | 配置值,缺省不写文件 |
-| `--config <path>` | 自定义配置文件路径 | `local_blast_dbs/config.json` |
+| `--config <path>` | 本次运行读取指定配置文件(设置页读写均落该文件;不持久化,下次不带参数回到默认) | 数据目录/`config.json` |
 
 ### 2.3 NCBI BLAST+ 程序定位规则(关键)
 
@@ -126,7 +126,7 @@ BlastPrimeStudio/
 
 - 在界面顶部显示醒目横幅警告,列出缺失的工具名;
 - 提供两个按钮:
-  - **"打开安装说明"**:展示图文指引(NCBI 官方下载地址、conda/apt/brew 安装命令);
+  - **"打开安装说明"**:内置弹窗展示安装指引(NCBI 官方下载地址与安装包清单、Windows 安装程序与 PATH 添加步骤、Linux/macOS 包管理器命令、解压 tar.gz 后手动指定目录的途径;内容双语,见 i18n `guide.content`);
   - **"手动指定 BLAST 目录"**:让用户通过文件选择器指定包含 BLAST 可执行文件的 `bin` 目录,指定后立即重新检测并持久化到配置;
 - 在警告未消除前,所有依赖 BLAST 的操作(建库、比对、引物设计)的按钮置灰并提示原因。
 
@@ -473,6 +473,8 @@ BlastPrimeStudio/
 | GC 范围 | 30% ~ 70% | primer3 约束 |
 | 引物长度范围 | 18 ~ 25 bp | primer3 约束 |
 | 产物长度范围 | 150 ~ 300 bp | 支持"绝对值"或"相对序列长度";另有"不限制"模式(单引物) |
+| 产物偏移(±) | 0 ~ 300 bp | 相对产物模式:产物长度 = 基准 ± 偏移(基准 = 目标片段长度(名称型)/模板总长(普通模板),换算为绝对值后交 primer3) |
+| 设计 BLAST 参数 | E-value 10 / max_targets 5000 / 超时 600s | 第一步整段模板 blastn 的检索参数,可调 |
 | 侧翼延伸长度 | 150 bp | 目标区两侧可用模板的延伸长度(不跨库条目/染色体) |
 | 最大引物二聚体 | 5 bp | 引物对相互二聚体阈值(primer3 或独立校验) |
 | 最大 Tm 差(上下游) | 2 °C | |
@@ -651,9 +653,11 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
 
 ### 9.6 配置与数据目录
 
-- 程序数据目录:`local_blast_dbs/`(随项目),内含 `.gitignore`(写入 `*`)与 `config.json`。
-- 数据库历史记录存于配置;引物设计参数(见 7.6,含模式)持久化于配置;下次打开沿用。
-- BLAST 工具手动指定路径、语言、主题、日志级别/文件路径同样持久化。
+- 程序数据目录:源码模式 = 项目根 `local_blast_dbs/`;打包模式 = exe 同级 `local_blast_dbs/`(写入探测失败时回退 `%APPDATA%/BlastPrimeStudio/local_blast_dbs/`)。**绝不使用 `sys._MEIPASS`**——onefile 的临时解包目录每次启动重建、退出即失。
+- 内含 `.gitignore`(写入 `*`)与 `config.json`;数据库历史记录、引物设计参数(见 7.6,含模式)、BLAST 工具手动路径、语言、主题、日志级别/文件路径、数据目录(`data_dir`)全部持久化于配置,下次打开沿用。
+- 设置页可修改 `data_dir`(建库默认存储,立即生效);配置的迁移/备份走设置页"导入配置/下载配置"(整体导入导出,导入后保存到当前配置文件位置,不改变配置定位)。
+- 运行参数 `--config <path>` 仅本次运行读取指定配置(设置页读写落该文件),不持久化、不设引导链;下次不带参数启动回到数据目录的默认配置。
+- 启动时在控制台与日志文件打印数据目录与配置文件路径,便于用户定位文件。
 
 ---
 
@@ -668,13 +672,17 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
   "loglevel": "INFO",
   "logfile": "",
   "blast_bin_dir": "",            # 手动指定的 BLAST 目录
+  "data_dir": "",                 # 默认数据库存储路径(留空 = 9.6 默认数据目录)
   "db_records": [ {"prefix": "...", "is_created": true} ],
   "primer_params": { ... }        # 7.6 全部参数
 }
 ```
 
 - 配置损坏时:备份原文件为 `config.json.bak` 并以默认配置启动,状态栏提示;
-- 载入配置时自动清理失效的数据库历史记录(索引文件不存在的条目),并即时重写配置文件。
+- 载入配置时自动清理失效的数据库历史记录(索引文件不存在的条目),并即时重写配置文件;
+- 无引导链:配置文件位置固定为数据目录/`config.json`(或 `--config` 指定),不跟随配置内容中的任何路径字段;旧版遗留的 `config_path` 键在载入时剔除;
+- 设置页"导入配置"整体导入 config.json 内容(与默认值合并、剔除废弃键、校验类型、清理失效记录)并保存到当前配置文件;"下载配置"导出当前完整配置为 `BlastPrimeStudio-config.json`(可跨机器回读);
+- 配置文件写入失败不再静默吞掉:记录日志并向用户返回错误(此前 `except OSError: pass` 在打包模式下表现为"保存成功但什么都没存下")。
 
 ---
 
@@ -690,6 +698,7 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
 - 打包时把 `bin/`(BLAST+ 全套,Windows 版)作为数据文件加入;
 - 启动后 BLAST 程序定位首先查找 `sys._MEIPASS/bin/`(onefile 解包目录)或 exe 同级 `bin/`,保证内置优先;
 - 前端 `static/` 完整打入包内(路径经 `sys._MEIPASS` 解析),不可依赖外部资源;
+- primer3 打包必须带两个 `--add-data`(缺一不可,命令见 README 打包节):① `p3helpers.<cpXXX>-win_amd64.pyd` 以**数据文件**进包——代码显式 import 收集会以扩展模块注册,使 PyInstaller 引导器 longjmp;② `src/libprimer3/primer3_config` 热力学参数目录——thermoanalysis 初始化按 `__file__` 相对路径读取,缺则 libprimer3 打印 "longjump" 崩溃(见 `primer_metrics.py` 注释);
 - 打包后必须验证的核心用例:
   1. 全新机器(无 Python、无 BLAST)双击启动 → 自动开浏览器 → 建库 → BLAST → 可视化;
   2. 引物设计四段式全流程可用;
@@ -699,7 +708,10 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
 
 ### 11.3 数据目录说明
 
-- 打包模式下,`local_blast_dbs/` 建在 exe 同级的可写目录(如 `%APPDATA%/BlastPrimeStudio/` 或 exe 同级),确保用户有写权限;路径显示在"设置"页,可一键打开。
+- 打包模式下,`local_blast_dbs/` 建在 exe 同级的可写目录(写入探测失败时回退 `%APPDATA%/BlastPrimeStudio/`),确保用户有写权限;
+- 启动时控制台与日志文件打印实际数据目录与配置文件路径;
+- "设置"页显示并可修改默认数据库存储路径(`data_dir`),保存即落盘 config.json、重启沿用;配置迁移/备份用"导入配置/下载配置"(导入导出,不设引导链);
+- 打包验证需确认:设置页保存后 exe 同级(或 %APPDATA%)出现 `local_blast_dbs/config.json`,建库文件落在其中且重启后仍在(此前 bug:数据解析到 `sys._MEIPASS` 临时目录,重启全部丢失)。
 
 ---
 
@@ -710,7 +722,11 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
 | BLAST 工具缺失 | 顶部横幅 + 按钮置灰 | 缺失工具列表 + 安装说明 + 手动指定入口 |
 | 数据库文件不存在/已损坏 | 错误弹窗 | 完整路径、缺失的具体索引文件 |
 | FASTA 非法 | 输入框红框 + 错误弹窗 | 定位到非法行/字符,建议"序列清洗" |
-| 建库失败 | 错误弹窗 | makeblastdb 原始 stderr 全文 |
+| 建库失败 | 错误弹窗 | makeblastdb 原始 stderr 全文(完整输出进日志文件,尾部 40 行进任务日志 error 级) |
+| BLAST 子进程失败 | 错误弹窗 + 日志 | exit code + 输出尾部;完整命令与输出写入日志文件 |
+| 任务未预期异常 | 日志文件 | 完整 traceback(日志抽屉仅摘要) |
+| 配置文件写入失败 | 错误弹窗 | 具体路径与 OSError 详情(不再静默"保存成功") |
+| 导入配置失败 | 错误弹窗 | 非法 JSON / 根节点非对象 / 写入失败详情(导入不改配置定位) |
 | BLAST 无结果 | 结果页占位提示 | "未找到匹配" + 建议放宽 E-value / 检查数据库 |
 | 短序列未开短模式 | 确认弹窗 | 警告与继续选项 |
 | 远程比对 | 确认弹窗 | 数据将离开本机、可能耗时数小时 |
@@ -731,6 +747,7 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
 - [ ] Windows 打包 exe 在无 Python/无 BLAST 环境双击可用,内置 BLAST 生效
 - [ ] 源码模式下 BLAST 定位顺序(根目录 → bin/ → PATH)生效;缺失时横幅+手动指定+安装指引可用
 - [ ] 中英双语即时切换;浅/深主题;设置持久化
+- [ ] 设置页修改默认数据库存储路径后落盘 config.json,重启沿用;"导入配置/下载配置"导入导出往返一致;`--config <path>` 本次运行读取生效
 - [ ] 后台任务可取消、进度实时推送、日志抽屉可用
 
 ### B. 数据库

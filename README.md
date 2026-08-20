@@ -48,8 +48,10 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 # 2. Install dependencies (first time)
 pip install -r requirements.txt
 
-# 3. Start
-python -m blastprime.app         # or: blastprime if the entry script is available
+# 3. Start (any of these)
+python -m blastprime.app         # module entry
+python run.py                    # top-level entry (same entry the exe uses)
+blastprime                       # only if the entry script was installed by pip
 ```
 
 Your browser opens automatically (default `http://127.0.0.1:8686`); if it doesn't, visit the URL printed in the terminal.
@@ -61,11 +63,11 @@ Your browser opens automatically (default `http://127.0.0.1:8686`); if it doesn'
 | Option | Description | Default |
 |---|---|---|
 | `--host` | Bind address | `127.0.0.1` |
-| `--port` | Listen port; auto-increments if occupied (logged) | `8000` |
+| `--port` | Listen port; auto-increments if occupied (logged) | `8686` |
 | `--no-browser` | Do not auto-open a browser | auto-open |
 | `--loglevel` | `DEBUG` / `INFO` / `WARNING` / `ERROR` | config value, else `INFO` |
 | `--logfile <path>` | Also write logs to a file | config value, else none |
-| `--config <path>` | Custom config file path | `local_blast_dbs/config.json` |
+| `--config <path>` | Read config from this path (this run only; not persisted) | `local_blast_dbs/config.json` |
 
 ### NCBI BLAST+ discovery order
 
@@ -74,14 +76,32 @@ The app locates the BLAST+ executables in a fixed order:
 1. **Packaged (Windows .exe)**: `sys._MEIPASS/bin/` (PyInstaller bundle dir) → `bin/` next to the exe
 2. **From source**: project root → `bin/` under the project root → system `PATH`
 
-If not found: a banner warning + “Installation guide” (official NCBI downloads, conda/apt/brew commands) + “Set BLAST dir manually” (persisted); build/align/design buttons stay disabled until resolved.
+If not found: a banner warning appears with two actions — **Installation guide** (a built-in modal) and **Set BLAST dir manually** (persisted); build/align/design buttons stay disabled until resolved.
 
+### Installing NCBI BLAST+ (when not bundled)
+
+All packages live at https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/ (current release: 2.17.0).
+
+**Windows**
+- Run `ncbi-blast-2.17.0+-win64.exe` — the installer configures PATH automatically.
+- Or extract `ncbi-blast-2.17.0+-x64-win64.tar.gz` and point **Settings → Set BLAST dir manually** at the `bin` folder.
+- Add PATH manually (example `C:\Program Files\NCBI\blast-2.17.0+\bin`): Settings → System → About → Advanced system settings → Environment Variables → double-click `Path` → New → paste the bin path → OK.
+
+**Linux**
 ```bash
-# Installing BLAST+ (examples)
-sudo apt install ncbi-blast+          # Debian/Ubuntu
-brew install blast                    # macOS
-conda install -c bioconda blast       # conda users
+sudo apt install ncbi-blast+      # Debian / Ubuntu
+sudo dnf install ncbi-blast+      # Fedora / RHEL
+sudo pacman -S blast              # Arch
 ```
+Or extract `ncbi-blast-2.17.0+-x64-linux.tar.gz` and set the bin folder manually in Settings.
+
+**macOS**
+```bash
+brew install blast                # Homebrew
+```
+Or extract `ncbi-blast-2.17.0+-universal-macosx.tar.gz` and set the bin folder manually in Settings.
+
+Setting the folder manually in **Settings** works on every platform and needs no system PATH changes.
 
 ---
 
@@ -162,7 +182,7 @@ Enter a primer, probe, or short sequence ≤100 bp (optionally combined with the
 
 | Level | Strategy |
 |---|---|
-| **Step 1** | blastn of the whole template (E-value 10, max_targets 5000, **DUST disabled** so repeats stay visible) → per-base k-mer counting (8/10/12/15-mer windows) → depth d(i) → specificity profile (score = count^(−1/3)) |
+| **Step 1** | blastn of the whole template (E-value 10, max_targets 5000) → per-base k-mer counting (8/10/12/15-mer windows) → depth d(i) → specificity profile (score = count^(−1/3)) |
 | **Level 1** | Only count=1 (unique) positions allowed; success if any pairs are produced |
 | **Level 2** | count 2–3 released, accumulating with level 1 |
 | **Level 3** | count 4–6 released, same accumulation |
@@ -192,8 +212,8 @@ All parameters persist; “Restore defaults” is provided.
 
 ### Composite score (0–100)
 
-- **Physics 60%**: normalized primer3 penalty + Tm/GC bonuses + hairpin/dimer deductions
-- **Specificity 40%**: unique match = 100, 3′-end exemption = 80, unpaired = 60; each off-target site deducts points
+- **Physics 50%**: normalized primer3 penalty + Tm/GC bonuses + hairpin/dimer deductions
+- **Specificity 50%**: unique match = 100, 3′-end exemption = 80, unpaired = 60; each off-target site deducts points (weights configurable)
 - Sorted descending; when stages 1–3 succeed, the specificity score is scaled by the single-copy fraction of the target region
 
 ### Additional modes
@@ -214,11 +234,12 @@ All parameters persist; “Restore defaults” is provided.
 ```
 local_blast_dbs/              # program data directory
 ├── config.json               # global config (lang/theme/loglevel/logfile/blast_bin_dir/
-│                             #   db_records/primer_params)
+│                             #   data_dir/db_records/primer_params)
 └── blastdb_<random-suffix>/  # one directory per DB (contains .gitignore with `*`)
 ```
 
-- **config.json**: language, theme, log level/file, BLAST dir, DB history, design parameters; if corrupted it is backed up as `config.json.bak` and the app starts with defaults
+- **config.json**: language, theme, log level/file, BLAST dir, default database storage dir (`data_dir`), DB history, design parameters; if corrupted it is backed up as `config.json.bak` and the app starts with defaults
+- **Settings dialog**: edit `data_dir` (applies immediately); import/download the whole config (`导入配置` / `Download config`) for migration/backup — no bootstrap chain; `--config` reads a specific file for this run only
 - **Project files `.json`**: BLAST results and primer designs can be saved as project files (`app: BlastPrimeStudio`, `version: 1`, `kind: blast|primer_design`) and reloaded; corrupted content is rejected
 
 ### Export formats
@@ -248,29 +269,15 @@ Product_Len, Max_Dimer_Consec, Max_Dimer_Total, Off_Target_Sites, Specificity_Le
 
 Build a double-clickable Windows exe with PyInstaller, **bundling the full NCBI BLAST+ toolset and frontend assets**:
 
-```bash
-pyinstaller --onefile \
-  --add-data "static:static" \
-  --add-data "bin:bin" \
-  --name "BlastPrimeStudio-<version>-win64" \
-  blastprime/__main__.py
+```bat
+rem Adjust P3DIR to your environment (the primer3 package dir; run python -c "import primer3,os;print(os.path.dirname(primer3.__file__))" to find it)
+set P3DIR=%LOCALAPPDATA%\Programs\Python\Python314\Lib\site-packages\primer3
+pyinstaller --noconfirm --clean --onefile --name BlastPrimeStudio --icon static\favicon.ico --add-data "static;static" --add-data "bin;bin" --add-data "%P3DIR%\p3helpers.cp314-win_amd64.pyd;primer3" --add-data "%P3DIR%\src\libprimer3\primer3_config;primer3\src\libprimer3\primer3_config" run.py
 ```
 
 - Artifact naming: `BlastPrimeStudio-<version>-win64(.exe)`, semantic versioning
 - In packaged mode the data directory lives in a writable location next to the exe or in `%APPDATA%/BlastPrimeStudio/` (path shown on the Settings page)
 - Packaging verification cases: launch on a clean machine (no Python/BLAST) → build DB → BLAST → visualize; full four-level primer design; run from a path containing Chinese characters/spaces
-
----
-
-## 🧪 Testing
-
-```bash
-# API end-to-end (build DB → BLAST → analyze → design 3 modes → project → delete, 29 checks)
-python3 /tmp/bptest/e2e.py          # server must be running (--no-browser --port 8899)
-
-# Frontend logic (jsdom, 18 checks)
-node /tmp/bptest/smoke.js
-```
 
 ---
 

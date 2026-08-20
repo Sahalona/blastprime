@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -32,7 +33,8 @@ from fastapi.staticfiles import StaticFiles
 from Bio import SeqIO
 
 from . import blast, database, seq_tools
-from .config import DEFAULT_PRIMER_PARAMS, detect_system_lang, get_config
+from .config import (DEFAULT_PRIMER_PARAMS, detect_system_lang, default_data_dir,
+                     get_config, get_data_dir)
 from .primer_metrics import analyze_short_sequence
 from .primer_design import design_pipeline
 from .tasks import STATUS_FAILED, manager as task_manager
@@ -161,7 +163,15 @@ def _save_uploads(uploads: list[UploadFile]) -> str:
     for u in uploads:
         if u is None:
             continue
-        dest = td / (u.filename or "upload.fa")
+        # multipart filename 可能携带完整路径或 ..\ 穿越(Windows 浏览器/客户端
+        # 常见):只取 basename(同时切 / 与 \),否则 Path join 在 Windows 上会
+        # 把绝对路径整体替换临时目录,文件写出目录之外
+        # Multipart filenames may carry a full path or ..\ traversal (common
+        # from Windows browsers/clients): keep only the basename (split on both
+        # / and \), otherwise Path join on Windows replaces the temp dir with
+        # the absolute path and writes outside it
+        fname = re.split(r"[\\/]", u.filename or "")[-1] or "upload.fa"
+        dest = td / fname
         with dest.open("wb") as f:
             shutil.copyfileobj(u.file, f)
     return str(td)
@@ -205,6 +215,9 @@ async def api_settings_get() -> dict:
         "lang": cfg.get("lang", "zh"), "theme": cfg.get("theme", "system"),
         "loglevel": cfg.get("loglevel", "INFO"), "logfile": cfg.get("logfile", ""),
         "blast_bin_dir": cfg.get("blast_bin_dir", ""),
+        # 数据目录显示当前生效值(data_dir 设置或默认)
+        # Data dir shows the effective value (setting or default)
+        "data_dir": cfg.get("data_dir") or str(default_data_dir()),
         "db_records": cfg.db_records(), "primer_params": cfg.primer_params(),
     }
 
@@ -212,14 +225,65 @@ async def api_settings_get() -> dict:
 @app.post("/api/settings")
 async def api_settings_post(body: dict) -> dict:
     cfg = get_config()
-    for key in ("lang", "theme", "loglevel", "logfile"):
-        if key in body:
-            cfg.set(key, body[key])
-    if "blast_bin_dir" in body:
-        blast.set_manual_bin_dir(body["blast_bin_dir"] or None)
-    if "primer_params" in body and isinstance(body["primer_params"], dict):
-        cfg.set_primer_params(body["primer_params"])
+    try:
+        for key in ("lang", "theme", "loglevel", "logfile", "data_dir"):
+            if key in body:
+                cfg.set(key, body[key])
+        if "blast_bin_dir" in body:
+            blast.set_manual_bin_dir(body["blast_bin_dir"] or None)
+        if "primer_params" in body and isinstance(body["primer_params"], dict):
+            cfg.set_primer_params(body["primer_params"])
+    except OSError as e:
+        # 配置写入失败必须让用户看到(此前静默吞掉,exe 上表现为"保存成功但什么都没存下")
+        # A failed config write must reach the user (previously swallowed —
+        # on the exe that looked like "saved" while nothing persisted)
+        log.error("保存设置失败: %s", e)
+        raise HTTPException(500, f"配置写入失败:{e}")
     return await api_settings_get()
+
+
+# ---------------------------------------------------------------- 配置导入/导出 (Config import/export)
+
+@app.post("/api/config/import")
+async def api_config_import(body: dict) -> dict:
+    """读取配置(导入):把用户提供的 config.json 内容整体应用到当前配置并保存。
+    与 /api/project/load 同模式:JSON body 携带文件文本。导入内容中的任何
+    路径字段都不会改变程序当前配置文件的定位(配置位置 = 数据目录或 --config)。
+
+    Import config: apply a user-supplied config.json content wholesale and
+    save (same shape as /api/project/load: JSON body carries the file text).
+    Path fields in the imported content never change where the program's
+    config file lives (data dir, or --config).
+    """
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(400, "缺少配置内容")
+    try:
+        raw = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "配置文件损坏:不是有效 JSON")
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "配置文件根节点不是对象")
+    cfg = get_config()
+    try:
+        cfg.replace_data(raw)
+    except OSError as e:
+        log.error("导入配置失败: %s", e)
+        raise HTTPException(500, f"配置写入失败:{e}")
+    log.info("配置已导入并保存: %s", cfg.path)
+    return await api_settings_get()
+
+
+@app.get("/api/config/download")
+async def api_config_download() -> Response:
+    """下载配置:当前完整配置(剔除废弃键)作为 JSON 附件,可跨机器回读。
+
+    Download config: the full current config (deprecated keys stripped) as a
+    JSON attachment, re-importable on any machine.
+    """
+    return _export_response(
+        json.dumps(get_config().snapshot(), ensure_ascii=False, indent=2),
+        "BlastPrimeStudio-config.json", "application/json")
 
 
 # ---------------------------------------------------------------- 数据库 (Database)
@@ -636,7 +700,6 @@ def _extract_template(db_prefix: str, entry: str, smin: int, smax: int,
         "entry": entry, "entry_len": entry_len,
         "strand": "minus" if minus else "plus",
         "range": [smin, smax],   # 目标区间(条目上的基因组坐标,1-based)
-        # Target range (genomic coordinates on the entry, 1-based)
         "requested": {"start": req_s, "end": req_e},
         "extract": {"start": ext_s, "end": ext_e},
         "truncated": req_s < ext_s or req_e > ext_e,
@@ -1208,8 +1271,10 @@ _CLI_LANG_TEXT = {
         "no_browser": "不自动打开浏览器",
         "loglevel": "日志级别 DEBUG/INFO/WARNING/ERROR",
         "logfile": "日志文件路径",
-        "config": "配置文件路径(默认 数据目录/config.json)",
+        "config": "读取指定配置文件(仅本次运行;默认 数据目录/config.json;迁移/备份用设置页导入导出)",
         "started": "BlastPrime Studio 启动: %s  (Ctrl+C 退出)",
+        "data_dir": "数据目录: %s",
+        "config_path": "配置文件: %s",
         "open_fail": "自动打开浏览器失败(可手动访问 %s)",
     },
     "en": {
@@ -1219,8 +1284,10 @@ _CLI_LANG_TEXT = {
         "no_browser": "do not auto-open a browser",
         "loglevel": "log level DEBUG/INFO/WARNING/ERROR",
         "logfile": "log file path",
-        "config": "config file path (default: data dir/config.json)",
+        "config": "read config from this path (this run only; default: data dir/config.json; use the settings import/export for migration/backup)",
         "started": "BlastPrime Studio started: %s  (Ctrl+C to quit)",
+        "data_dir": "Data directory: %s",
+        "config_path": "Config file: %s",
         "open_fail": "failed to open browser (visit %s manually)",
     },
 }
@@ -1264,18 +1331,52 @@ def main() -> None:
 
     cfg = get_config()
     if args.config:
-        from .config import Config
-        cfg = Config(args.config)
+        # --config:显式指定配置路径,切换全局单例(设置页读写都落到该文件;
+        # 此前只影响日志级别/文件,设置接口仍走默认单例 —— 参数等于没生效)
+        # --config: an explicit config path swaps the global singleton (the
+        # settings dialog reads/writes that file; previously it only affected
+        # the log level/file while the settings API kept the default singleton)
+        from .config import set_config_path
+        cfg = set_config_path(args.config)
     if args.loglevel:
         cfg.set("loglevel", args.loglevel)
     if args.logfile:
         cfg.set("logfile", args.logfile)
+    logfile = (cfg.get("logfile") or "").strip()
+    if logfile and not os.path.isabs(logfile):
+        # 相对日志路径以数据目录为基准:exe 双击启动时工作目录不可控,
+        # 用户记日志位置也以设置页显示的数据目录为准
+        # Relative log paths resolve against the data dir: the working
+        # directory is unreliable when the exe is double-clicked, and the
+        # settings dialog shows the data dir for reference
+        logfile = str(get_data_dir() / logfile)
+    try:
+        logging.basicConfig(
+            level=getattr(logging, str(cfg.get("loglevel", "INFO")).upper(), logging.INFO),
+            filename=logfile or None,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+    except OSError as e:
+        # 日志文件不可写(如用户设置的路径在只读位置)不能阻止启动:
+        # 回退仅控制台输出,并明确告知原因 —— 否则 exe 双击启动即静默崩溃
+        # An unwritable log file (e.g. a user-set path on a read-only location)
+        # must not abort startup: fall back to console-only output and state
+        # the reason — otherwise the exe dies silently on double-click
+        print(f"[logging] 无法写入日志文件 {logfile},仅控制台输出: {e}")
+        logging.basicConfig(
+            level=getattr(logging, str(cfg.get("loglevel", "INFO")).upper(), logging.INFO),
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
 
-    logging.basicConfig(
-        level=getattr(logging, str(cfg.get("loglevel", "INFO")).upper(), logging.INFO),
-        filename=cfg.get("logfile") or None,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # 启动时宣告数据目录与配置文件位置(双语,随系统语言;进日志文件与控制台,
+    # 不经 print —— print 只到 stdout,写日志文件时 URL/路径全部缺席)。
+    # 数据目录/配置文件这对信息只用 logger 输出一份,不再与 print 重复。
+    # Announce the data dir and config file at startup (bilingual, follows the
+    # system language; goes to both the log file and console via the logger —
+    # not print, which writes only to stdout and leaves the log file empty of
+    # these paths). This pair of facts is logged once, not duplicated by print.
+    log.info(H["data_dir"] % get_data_dir())
+    log.info(H["config_path"] % cfg.path)
 
     # 端口顺延(帮助文本已声明"若被占用则自动顺延"):先探测再启动,
     # 避免 Windows 端口排除范围/占用直接抛 WinError 10013/10048 退出。
@@ -1292,7 +1393,10 @@ def main() -> None:
         threading.Timer(1.2, _open).start()
 
     import uvicorn
-    print(H["started"] % url)
+    # 启动 URL 同样走 logger:日志文件里留下可访问地址(print 只到控制台)
+    # The start URL goes through the logger too: the log file keeps the
+    # reachable address (print only reached the console)
+    log.info(H["started"] % url)
     uvicorn.run(app, host=args.host, port=port, log_level="info")
 
 

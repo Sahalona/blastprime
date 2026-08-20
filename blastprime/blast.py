@@ -11,13 +11,15 @@ BLAST tool location, database construction, search, and result parsing.
 
 from __future__ import annotations
 
+import logging
 import os
+import queue
 import re
-import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +29,8 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 
 from .config import get_config
+
+log = logging.getLogger("blastprime")
 
 TOOLS = ["makeblastdb", "blastn", "blastp", "blastx", "tblastn", "tblastx", "blastdbcmd"]
 
@@ -128,19 +132,32 @@ class CancelFlag:
 
 def run_proc(
     cmd: list[str],
-    on_log: Callable[[str], None] | None = None,
+    on_log: Callable[[str, str], None] | None = None,
     cancel: CancelFlag | None = None,
     timeout: int = 300,
     cwd: str | None = None,
     log_stdout: bool = True,
 ) -> subprocess.CompletedProcess:
-    """运行子进程,流式转发 stdout 到 on_log(log_stdout=False 时仅收集),
+    """运行子进程,流式转发 stdout 到 on_log(msg, level)(log_stdout=False 时仅收集),
     支持取消与超时。分析型 BLAST(tabular 含全序列列)应关掉 stdout 日志。
+    启动命令与失败详情(exit code + 完整输出)同时写入日志文件,失败时还把
+    输出尾部以 error 级推入任务日志 —— 建库/比对失败不再无声无息。
 
-    Run a subprocess, streaming stdout to on_log (only collected when log_stdout=False);
-    supports cancellation and timeout. Analytical BLAST (tabular with full-sequence
-    columns) should disable stdout logging.
+    Run a subprocess, streaming stdout to on_log(msg, level) (only collected
+    when log_stdout=False); supports cancellation and timeout. Analytical
+    BLAST (tabular with full-sequence columns) should disable stdout logging.
+    The command line and failure detail (exit code + full output) are written
+    to the log file; on failure the output tail is pushed to the task log at
+    error level — so database-build/alignment failures are never silent.
     """
+    # 命令行走双链路:日志文件(log.info)与网页任务日志(on_log)各一份。
+    # 注意两者是独立的通道 —— 只写 logger 的话日志抽屉看不到命令。
+    # The command line goes through both channels: the log file (log.info)
+    # and the web task log (on_log). They are independent — logger-only
+    # would leave the task drawer without the command.
+    log.info("运行命令: %s", " ".join(cmd))
+    if on_log:
+        on_log(f"运行: {' '.join(cmd)}")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -152,41 +169,71 @@ def run_proc(
     )
     lines: list[str] = []
     deadline = timeout if timeout > 0 else 0
+    # 取消/超时轮询:BLAST 长查询的搜索阶段可能长时间无 stdout 输出,
+    # 若在主线程按行阻塞读取,取消与超时都无法生效。stdout 由读线程
+    # 转发到队列,主循环限时取队列 —— 跨平台一致(Windows 的 select 只
+    # 支持套接字,对管道调用会抛 WinError 10038,exe 上建库/比对全崩)。
+    # Cancel/timeout polling: a long BLAST search can produce no stdout for
+    # a while, so a blocking line loop in the main thread would make
+    # cancellation/timeout ineffective. A reader thread forwards stdout into
+    # a queue and the main loop polls it with a timeout — portable across
+    # platforms (Windows select() supports sockets only; calling it on a
+    # pipe raises WinError 10038, crashing every build/alignment on the exe).
+    q: queue.Queue = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            assert proc.stdout is not None
+            for ln in proc.stdout:
+                q.put(ln.rstrip("\n"))
+        finally:
+            q.put(None)   # EOF 哨兵:正常结束与异常都必须送,否则主循环空转 (EOF sentinel; sent on both normal exit and errors, otherwise the main loop spins)
+
+    threading.Thread(target=_reader, daemon=True,
+                     name="proc-stdout-reader").start()
     try:
-        assert proc.stdout is not None
-        # 取消/超时轮询:BLAST 长查询的搜索阶段可能长时间无 stdout 输出,
-        # 若按行阻塞读取,取消与超时都无法生效;用 select 限时读取。
-        # Cancel/timeout polling: the search phase of a long BLAST query can
-        # produce no stdout for a long time; a plain blocking line loop would
-        # make cancellation and timeout ineffective. Read with a select
-        # timeout so the flag is checked even while output is idle.
         start = time.monotonic()
         while True:
             if cancel is not None and cancel.cancelled:
                 proc.kill()
                 proc.wait()
+                log.warning("命令已取消: %s ...", " ".join(cmd[:4]))
                 raise BlastError("任务已取消")
             if deadline and time.monotonic() - start > deadline:
                 proc.kill()
                 proc.wait()
+                log.warning("命令超时(%ss),已终止: %s ...", timeout, " ".join(cmd[:4]))
                 raise BlastError(f"命令超时(>{timeout}s),已终止: {' '.join(cmd[:4])} ...")
-            readable, _, _ = select.select([proc.stdout], [], [], 0.2)
-            if not readable:
+            try:
+                line = q.get(timeout=0.2)
+            except queue.Empty:
                 continue
-            line = proc.stdout.readline()
-            if not line:
+            if line is None:
                 break
-            lines.append(line.rstrip("\n"))
+            lines.append(line)
             if on_log and log_stdout:
-                on_log(line.rstrip("\n"))
+                on_log(line)
         proc.wait(timeout=deadline if deadline else None)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+        log.warning("命令超时(%ss),已终止: %s ...", timeout, " ".join(cmd[:4]))
         raise BlastError(f"命令超时(>{timeout}s),已终止: {' '.join(cmd[:4])} ...")
     if proc.returncode != 0:
         tail = "\n".join(lines[-40:])
-        raise BlastError(f"命令失败 (exit {proc.returncode}): {' '.join(cmd[:4])} ...\n{tail}")
+        summary = f"命令失败 (exit {proc.returncode}): {' '.join(cmd[:4])} ..."
+        # 完整输出(可能数万行)写日志文件,尾部 40 行同时进任务日志(ERROR 级,
+        # 前端日志抽屉可见)—— stderr 已被合并进 stdout(subprocess.STDOUT)
+        # Full output (potentially tens of thousands of lines) goes to the log
+        # file; the last 40 lines also go to the task log at ERROR level (visible
+        # in the frontend log drawer) — stderr is already merged into stdout
+        log.error("%s\n--- 完整输出(共 %d 行) ---\n%s",
+                  summary, len(lines), "\n".join(lines))
+        if on_log:
+            on_log(summary, "error")
+            for ln in lines[-40:]:
+                on_log(ln, "error")
+        raise BlastError(f"{summary}\n{tail}")
     return subprocess.CompletedProcess(cmd, 0, "\n".join(lines), "")
 
 
@@ -245,7 +292,7 @@ def build_database(
     dbtype: str,          # auto | nucl | prot
     name: str,
     out_dir: str | None,
-    on_log: Callable[[str], None] | None = None,
+    on_log: Callable[[str, str], None] | None = None,
     on_progress: Callable[[float, str], None] | None = None,
     cancel: CancelFlag | None = None,
 ) -> dict:
@@ -621,7 +668,7 @@ def run_blast(
     short_seq_mode: bool,
     remote: bool = False,
     remote_db: str = "nr",
-    on_log: Callable[[str], None] | None = None,
+    on_log: Callable[[str, str], None] | None = None,
     on_progress: Callable[[float, str], None] | None = None,
     cancel: CancelFlag | None = None,
     timeout: int = 600,
@@ -676,13 +723,15 @@ def run_blast(
         # stage label stays visible there too
         on_progress(0, f"{program} 比对运行中")
     if on_log:
-        on_log(f"运行: {' '.join(cmd)}")
         # 成对文本输出可达数万行,逐行进 SSE 会刷爆前端主线程导致页面无响应;
         # 只收集不转发(失败时仍随错误消息附最后 40 行),原始输出完成后经结果接口提供
         # Pairwise text output can reach tens of thousands of lines; forwarding line-by-line over SSE
         # would flood the frontend main thread and freeze the page. Collect without forwarding
         # (on failure, the last 40 lines are still attached to the error message); the raw output
         # is delivered via the results endpoint once complete.
+        # (完整命令已由 run_proc 写入日志文件,并推入任务日志)
+        # (run_proc already wrote the full command to the log file and pushed
+        # it into the task log)
         on_log("比对进行中,完整原始输出将在完成后提供…")
     r = run_proc(cmd, on_log=on_log, cancel=cancel, timeout=timeout, log_stdout=False)
     raw = r.stdout
@@ -708,7 +757,7 @@ def run_blast_tabular(
     evalue: float = 10.0,
     max_targets: int = 5000,
     extra_args: list[str] | None = None,
-    on_log: Callable[[str], None] | None = None,
+    on_log: Callable[[str, str], None] | None = None,
     cancel: CancelFlag | None = None,
     timeout: int = 600,
 ) -> list[dict]:
